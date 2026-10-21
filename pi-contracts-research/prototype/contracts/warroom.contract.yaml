@@ -1,0 +1,118 @@
+# =============================================================================
+# warroom.contract.yaml — the contract for the War Room project.
+#
+# Derived from AGENTS.md, which is the normative source. This file does not restate
+# the rules; it names the CHECKS that can enforce them mechanically, and points at
+# the section each one comes from. Anything not expressible as a check here stays a
+# prose obligation in AGENTS.md, and that is deliberate.
+#
+# Compile:  node contracts/warroom.contract.yaml --out /work/generated
+# =============================================================================
+
+agent: warroom-implementer
+spec-version: "0.1.0"
+version: "0.1.0"
+description: >
+  Rule set enforced on agents implementing a War Room change. Every clause is
+  derived from AGENTS.md; the boundary is supplied per task and defaults to the
+  documentation surface, since no application repository exists yet.
+tags: [warroom, spec-driven, tdd]
+
+requires:
+  - text: change_file_exists
+    judge: deterministic
+    description: >
+      Work MUST be driven by a change file under changes/. An agent with no change
+      file has no boundary and no definition of done, and MUST NOT begin.
+    check:
+      kind: file_exists
+      params: { globs: ["AGENTS.md"], mode: "any" }
+    on_fail: warn
+
+invariant:
+  - text: no_write_outside_boundary
+    judge: deterministic
+    description: The worker may only modify files inside the task boundary.
+    check:
+      kind: file_boundary
+      params:
+        include: ["Warroom/**"]
+        exclude: ["node_modules/**", ".git/**", "Warroom/Work Documents/spec.md"]
+        normalize: repo_relative
+    on_fail: block
+
+  - text: no_requirement_erosion
+    judge: deterministic
+    description: >
+      The requirement register is the traceability spine. An agent MUST NOT delete
+      or weaken a requirement, a test row, or a spec citation to make its change
+      pass. Removing an entry is legitimate only by re-approving the change.
+    check:
+      kind: test_integrity
+      params:
+        test_globs:
+          - "Warroom/Work Documents/product/requirements.yaml"
+          - "Warroom/Work Documents/testing/acceptance-tests.md"
+        forbid_added: ["\\.skip\\s*\\(", "\\.only\\s*\\(", "\\btest\\.todo\\s*\\("]
+        forbid_removed_assertions: true
+    on_fail: block
+
+  - text: no_change_file_drift
+    judge: deterministic
+    description: >
+      The change file is the unit of work. Its boundary and non-goals MUST NOT be
+      widened mid-change to accommodate work that ran out of scope.
+    check:
+      kind: path_protected
+      params:
+        patterns:
+          - "Warroom/Work Documents/changes/**/change.yaml"
+    on_fail: block
+
+  - text: no_repo_mutation_by_worker
+    judge: deterministic
+    description: >
+      The agent does not commit, stage, branch, reset, clean, or merge. Committing
+      and merging are performed under git-workflow.md by the named role.
+    check:
+      kind: command_forbidden
+      params:
+        git_subcommands: [commit, add, push, reset, checkout, switch, clean, stash, rebase, merge, worktree]
+        patterns:
+          - "\\brm\\s+-[rRf]{1,2}"
+          - "\\bnpm\\s+(install|uninstall|publish)\\b"
+          - "\\bsudo\\b"
+    on_fail: block
+
+must:
+  - text: tests_run_before_claiming_done
+    judge: deterministic
+    description: >
+      A completion claim must be backed by a real, passing test run. The harness
+      captures the output; the worker does not re-quote it.
+    check:
+      kind: evidence_captured
+      params:
+        test_command_patterns: ["\\bpytest\\b", "\\bplaywright\\b", "\\bnpm\\s+test\\b", "\\bnode\\s+--test\\b"]
+        ran: ["# pass", "ℹ pass", "Tests:", "^ok \\d+", "passed"]
+        passed: ["# fail 0", "ℹ fail 0", "0 failed"]
+        failed: ["# fail [1-9]", "ℹ fail [1-9]", "[1-9][0-9]* failed", "FAILED"]
+        claim_patterns: ["\\b(done|complete|completed|implemented|finished|shipped)\\b"]
+        enforce_before_settle: true
+    on_fail: block
+
+  - text: state_the_requirements_met
+    judge: deterministic
+    description: >
+      The worker names the WR-xxx ids it satisfied. A change that cannot name them
+      was not understood, and that is worth surfacing rather than hiding.
+    check:
+      kind: always_state
+      params:
+        tokens: ["WR-"]
+      # warn, not block: this is a disclosure aid, and a weak model failing to
+      # volunteer an id is not a safety failure.
+    on_fail: warn
+
+on_violation:
+  default: block

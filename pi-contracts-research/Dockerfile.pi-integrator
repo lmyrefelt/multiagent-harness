@@ -1,0 +1,25 @@
+# Dockerfile.pi-integrator — pi-contracts:latest + pi-subagents, for the
+# integrator/controller role (the host project's launch-integrator.sh).
+#
+# Kept SEPARATE from Dockerfile.pi-contracts (the worker/planner image)
+# deliberately. pi-subagents' BACKGROUND/detached-runner children are an
+# unverified tool_call-routing path: it is not yet confirmed whether that
+# detached process inherits --extension/CONTRACT_GUARDS, so a background
+# child could in principle bypass contract-guard entirely. That risk matters
+# far more for a worker (fenced to owned_paths - the fence is the only thing
+# standing between it and the rest of the repo) than for the integrator,
+# which is already trusted with repo-wide writes and is not path-fenced by
+# contract-guard at all; its real guard is integrator_merge_gate (checks.mjs),
+# which inspects the ACTUAL `git merge` command regardless of which agent or
+# sub-agent issued it. Do not fold pi-subagents into Dockerfile.pi-contracts
+# until the background case has been verified empirically.
+#
+#   ./build.sh integrator   (or: ./build.sh ensure all)
+# The base is passed in by build.sh (--build-arg BASE_IMAGE=<slug>-pi-contracts:latest),
+# derived from contracts/.harness-slug - never hard-code a namespaced name here.
+ARG BASE_IMAGE=pi-contracts:latest
+FROM ${BASE_IMAGE}
+
+USER node
+RUN pi install npm:pi-subagents
+RUN pi install npm:pi-hashline-edit-pro

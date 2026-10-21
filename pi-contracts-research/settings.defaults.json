@@ -1,0 +1,144 @@
+{
+  "_comment": [
+    "Container defaults for a bounded worker.",
+    "defaultTools restricts BUILT-IN tools only; an empty array still leaves",
+    "extension and SDK tools live, so this is a narrowing default and NOT a",
+    "boundary. The boundary is enforced by contract-guard at tool_call.",
+    "grep/find/ls are intentionally omitted: a weak model that cannot use them",
+    "tends to substitute `bash ls` / `bash grep`, which routes around path",
+    "guards. Whether that is real must be measured in brief 02, not assumed.",
+    "",
+    "compaction.modelOverrides: keys are exact, case-sensitive provider/modelId",
+    "strings (pi's own compaction.md) - a typo'd key silently never matches, so",
+    "verify each one against a real session's message.provider/message.model",
+    "fields (scripts/session-cost.mjs) rather than trusting it from memory.",
+    "The GLOBAL reserveTokens/keepRecentTokens below are sized for small",
+    "context windows and do their job there - for a ~128K local model the",
+    "default trigger (contextWindow - reserveTokens = ~111K) fires with real",
+    "room to spare. They do NOT help on a huge-context model: a 256K-1M window",
+    "makes that same 16384 reserve so small a fraction that compaction may",
+    "never fire in a normal session - which is exactly what the real measured",
+    "sessions showed (cacheRead ~97% of total tokens, no visible reset point;",
+    "see docs/postmortems/LOG.md). So per big-context model: a LARGE",
+    "reserveTokens forces an early trigger despite the huge window (same",
+    "pattern pi's own docs example uses). Target: HARNESS_COMPACT_AT (default",
+    "200K, scripts/harness-config-lib.sh) - the same trigger Claude/Codex get.",
+    "Generated per catalog model by scripts/gen-compaction-overrides.mjs.",
+    "",
+    "The four 'local/*' entries below are UNVERIFIED - added from names given",
+    "in conversation, not probed. This file's OWN models.json already carries",
+    "the exact same warning for a reason: 'Model names are not facts... do not",
+    "attribute a capability to a name without probing it.' Same rule applies",
+    "to the override KEY itself - if oMLX reports a different exact string",
+    "than one of these four, that entry silently never matches and this falls",
+    "back to the (too-generous-for-128K-sized-down-for-this, still-fine)",
+    "global default. Confirm each against a real local session's",
+    "message.provider/message.model (scripts/session-cost.mjs), or against",
+    "oMLX's own /v1/models, before trusting it actually applied.",
+    "",
+    "Free/stealth cloud models (openrouter) rotate names and are added",
+    "add-as-they-appear, not pre-guessed: when session-cost.mjs shows a new",
+    "one, add it here as provider/modelId with reserveTokens = its reported",
+    "context window - 100000, same treatment space-bunny-alpha got."
+  ],
+  "theme": "dark",
+  "defaultProvider": "openrouter",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "modelOverrides": {
+      "openrouter/stealth/space-bunny-alpha": {
+        "reserveTokens": 900000
+      },
+      "local/cyber-tiel-coder-35b-a3b-mlx-oq6e-mtp": {
+        "reserveTokens": 28000
+      },
+      "local/qwen3-coder-30b": {
+        "reserveTokens": 28000
+      },
+      "local/qwen3.6-35b-a3b": {
+        "reserveTokens": 28000
+      },
+      "local/qwen3.8-27b": {
+        "reserveTokens": 28000
+      },
+      "anthropic/claude-opus-5-5": {
+        "reserveTokens": 800000
+      },
+      "anthropic/claude-sonnet-5-5": {
+        "reserveTokens": 800000
+      },
+      "openai-codex/gpt-5.5": {
+        "reserveTokens": 72000
+      },
+      "openai-codex/gpt-6-astra": {
+        "reserveTokens": 72000
+      },
+      "openai-codex/gpt-6-luna": {
+        "reserveTokens": 72000
+      },
+      "openai-codex/gpt-6.1-sol": {
+        "reserveTokens": 72000
+      },
+      "openai/gpt-5.5": {
+        "reserveTokens": 72000
+      },
+      "openai/gpt-6-astra": {
+        "reserveTokens": 72000
+      },
+      "openai/gpt-6-luna": {
+        "reserveTokens": 72000
+      },
+      "openai/gpt-6.1-sol": {
+        "reserveTokens": 72000
+      },
+      "opencode-go/deepseek-v4.1-flash": {
+        "reserveTokens": 800000
+      },
+      "opencode-go/longcat-2.5-preview-free": {
+        "reserveTokens": 800000
+      },
+      "opencode-go/mimo-v2.6-flash": {
+        "reserveTokens": 848576
+      },
+      "opencode/deepseek-v4.1-flash": {
+        "reserveTokens": 800000
+      },
+      "opencode/deepseek-v4.1-flash-free": {
+        "reserveTokens": 800000
+      },
+      "openrouter/anthropic/claude-opus-5.5": {
+        "reserveTokens": 800000
+      },
+      "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
+        "reserveTokens": 800000
+      }
+    }
+  },
+  "defaultTools": [
+    "read",
+    "bash",
+    "edit",
+    "write"
+  ],
+  "_compaction_generated": [
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-sonnet-5-5",
+    "openai-codex/gpt-5.5",
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-6-luna",
+    "openai-codex/gpt-6.1-sol",
+    "openai/gpt-5.5",
+    "openai/gpt-6-astra",
+    "openai/gpt-6-luna",
+    "openai/gpt-6.1-sol",
+    "opencode-go/deepseek-v4.1-flash",
+    "opencode-go/longcat-2.5-preview-free",
+    "opencode-go/mimo-v2.6-flash",
+    "opencode/deepseek-v4.1-flash",
+    "opencode/deepseek-v4.1-flash-free",
+    "openrouter/anthropic/claude-opus-5.5",
+    "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+  ]
+}

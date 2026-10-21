@@ -1,0 +1,65 @@
+# Dockerfile.opencode — OpenCode CLI, as a guarded worker backend.
+#
+# FROM pi-contracts:latest (not a fresh base) specifically to inherit its
+# already-baked-in checks.mjs engine at /opt/contracts/extensions/checks.mjs -
+# scripts/opencode-guard-adapter.mjs (the host project, mounted at /repo at
+# runtime, not baked in here) imports that SAME pure evaluation core pi's own
+# contract-guard.ts uses.
+#
+# ARCHITECTURALLY DIFFERENT from the other three worker backends: OpenCode's
+# hook system is an IN-PROCESS plugin (a JS/TS module loaded by the opencode
+# binary itself, auto-discovered from .opencode/plugins/ in the project
+# directory), not an external process spawned per tool call reading
+# stdin/stdout JSON. There is therefore NO bind mount at all for the guard
+# wiring - scripts/launch-worker.sh writes the generated plugin file
+# straight into the worktree's already-mounted .opencode/plugins/ directory,
+# the same way it writes guards.json - and no mount-target pre-creation is
+# needed here, unlike Dockerfile.agy/Dockerfile.codex (nothing is ever
+# bind-mounted onto a path under /home/node for the guard itself).
+#
+# ~/.local/share/opencode/ IS pre-created below, as the node user, purely
+# for the OPTIONAL auth.json bind-mount (OPENCODE_CONFIG_DIR, mirroring pi's
+# own PI_CONFIG_DIR convention) - same root-owned-mount-target gotcha
+# Dockerfile.agy/Dockerfile.codex already hit, pre-empted here from the
+# start rather than discovered on a real launch a third time.
+#
+#   docker build -f Dockerfile.opencode -t harness-opencode:latest .   (context: the host project)
+FROM pi-contracts:latest
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# corepack: a worker's test command touching apps/web runs `corepack pnpm
+# --filter harness-web test ...` (packageManager pins pnpm@10.12.1, read by
+# corepack - package.json) - same gap found on every other backend's real
+# launch (Dockerfile.agy/Dockerfile.claude/Dockerfile.codex all needed this).
+RUN npm install -g corepack@latest && corepack enable
+
+USER node
+# Native installer (same shape as Dockerfile.agy/Dockerfile.claude) -
+# confirmed official (opencode.ai/docs/, fetched directly).
+# 2026-10-16: the installer puts the binary in $HOME/.opencode/bin, NOT
+# $HOME/.local/bin as assumed before - the image built fine but every launch
+# died with "opencode: command not found". Both dirs are on PATH now, and the
+# build FAILS if opencode is not runnable, so this can't ship silently again.
+RUN curl -fsSL https://opencode.ai/install | bash
+ENV PATH="/home/node/.opencode/bin:/home/node/.local/bin:${PATH}"
+# bash --login (the ENTRYPOINT) rebuilds PATH from /etc/profile + ~/.profile,
+# which only re-adds ~/.local/bin - so link the binary there too, and check it
+# through the SAME login shell the entrypoint uses.
+RUN mkdir -p /home/node/.local/bin \
+ && ln -sf /home/node/.opencode/bin/opencode /home/node/.local/bin/opencode \
+ && bash --login -c 'command -v opencode && opencode --version'
+
+# Mount target for the OPTIONAL OPENCODE_CONFIG_DIR auth.json bind-mount
+# (scripts/launch-worker.sh) - pre-created so docker doesn't auto-create it
+# root-owned if that env var is ever set.
+RUN mkdir -p /home/node/.local/share/opencode
+
+WORKDIR /workspace
+# Forwards trailing CMD args into the inner `opencode` invocation ($@) - same
+# pattern as the other three Dockerfiles, for the same reason (a fixed -c
+# string could never forward --prompt/--auto or the seed message).
+ENTRYPOINT ["/bin/bash", "--login", "-c", "opencode \"$@\"", "--"]

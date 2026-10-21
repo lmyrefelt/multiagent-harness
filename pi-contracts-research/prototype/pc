@@ -1,0 +1,231 @@
+#!/bin/sh
+# pc — the single entrypoint for the contract toolchain.
+#
+# The host has no node, so every command goes through the image. That makes two
+# failure modes routine: remembering a path inside the image, and running
+# against an image that predates a tool. Both have bitten this project, so every
+# precondition is checked here and reported with the command that fixes it.
+#
+#   pc ls                            what this image contains
+#   pc probe    <base-url>           capability table for every model
+#   pc generate <base-url> [out]     probe + write models.json   (one command)
+#   pc verify                         the guard self-tests
+#   pc compile                        recompile the contract
+#   pc aggregate                      cumulative results across all batches
+#   pc harness  [args...]             run the contract harness
+#   pc help                           this list
+#
+# pc harness accepts EITHER form, and forwards the flag form untouched so that
+# run-probes.mjs owns argument parsing:
+#
+#   pc harness --model local/... --task unverified --n 5
+#   pc harness local/... unverified 5
+#
+set -eu
+
+DIR=${CONTRACT_ROOT:-$(cd "$(dirname "$0")" && pwd)}
+# Anchored to $DIR, not relative: the container WORKDIR is /workspace, so a bare
+# "models.json" resolved elsewhere and a correctly-mounted file was ignored.
+MODELS=${PC_MODELS:-$DIR/models.json}
+RESULTS=${PC_RESULTS:-/results}
+AGENT_DIR=${PI_CODING_AGENT_DIR:-/home/node/.pi/agent}
+BASE_URL=${LOCAL_LLM_BASE_URL:-http://host.docker.internal:8001/v1}
+
+die() {
+  printf '\npc: %s\n' "$1" >&2
+  shift 2>/dev/null || true
+  if [ "$#" -gt 0 ]; then printf '%s\n' "$*" >&2; fi
+  printf '\n' >&2
+  exit 1
+}
+
+need() {
+  if [ ! -f "$DIR/$1" ]; then
+    die "$1 is not in this image. It predates this tool. Rebuild, then retry:" \
+        "    cd /workspace/pi-contracts-research && ./build.sh"
+  fi
+}
+
+# Verify the models file is a FILE. Docker turns a bind-mount source that does
+# not exist on the host into a DIRECTORY, so a typo in the -v path silently
+# mounts a directory and every model comes back not-found. Third occurrence.
+need_models() {
+  if [ -d "$MODELS" ]; then
+    die "$MODELS is a DIRECTORY, not a file." \
+"  Docker creates a directory when a bind-mount source does not exist on the host,
+  so a typo in the -v source path silently mounts a directory.
+
+  On the host:
+    ls -ld ~/pi-contracts-results/models.generated.json
+    rmdir ~/pi-contracts-results/models.generated.json 2>/dev/null
+
+  Then mount an ABSOLUTE path:
+    -v ~/pi-contracts-results/models.generated.json:/opt/contracts/models.json"
+  fi
+  if [ ! -f "$MODELS" ]; then
+    die "no models file at $MODELS" \
+        "Generate one:  pc generate $BASE_URL"
+  fi
+  # pi reads models.json from <agent-dir>, NOT from $DIR. Install it there so a
+  # mount anywhere works.
+  mkdir -p "$AGENT_DIR"
+  if ! cmp -s "$MODELS" "$AGENT_DIR/models.json" 2>/dev/null; then
+    cp "$MODELS" "$AGENT_DIR/models.json" || die "cannot install models.json into $AGENT_DIR"
+    printf 'pc: installed %s into %s\n' "$(basename "$MODELS")" "$AGENT_DIR"
+  fi
+  mkdir -p "$RESULTS"
+}
+
+cmd=${1:-help}
+[ "$#" -gt 0 ] && shift
+
+case $cmd in
+
+ls)
+  printf 'contract root: %s\n' "$DIR"
+  printf '\ntools:\n'
+  for f in compile.mjs verify-guards.mjs probe-local-models.mjs probe-lib.mjs \
+           make-models-json.mjs run-probes.mjs aggregate.mjs; do
+    if [ -f "$DIR/$f" ]; then printf '  ok    %s\n' "$f"; else printf '  MISS  %s\n' "$f"; fi
+  done
+  printf '\nengine:\n'
+  for f in checks.mjs contract-guard.ts; do
+    if [ -f "$DIR/extensions/$f" ]; then printf '  ok    extensions/%s\n' "$f"
+    else printf '  MISS  extensions/%s\n' "$f"; fi
+  done
+  printf '\ncontract:\n'
+  ls "$DIR/contracts" 2>/dev/null | sed 's/^/  /' || printf '  (none)\n'
+  printf '\ngenerated (from the build-time gate):\n'
+  ls "$DIR/generated" 2>/dev/null | sed 's/^/  /' || printf '  (none - the gate did not run)\n'
+  printf '\ncredentials: '
+  if [ -f "$AGENT_DIR/auth.json" ]; then printf 'present\n'; else printf 'NONE (local models still work)\n'; fi
+  printf '\nmodels: %s\n' "$MODELS"
+  if [ -d "$MODELS" ]; then
+    printf '  DIRECTORY (wrong - Docker made this from a bad mount source)\n'
+  elif [ -f "$MODELS" ]; then
+    printf '  ok, %s model(s)\n' "$(grep -c '"id"' "$MODELS" 2>/dev/null || echo 0)"
+  else
+    printf '  MISS - run: pc generate %s\n' "$BASE_URL"
+  fi
+  ;;
+
+verify)
+  need verify-guards.mjs
+  exec node "$DIR/verify-guards.mjs" "$@"
+  ;;
+
+compile)
+  need compile.mjs
+  exec node "$DIR/compile.mjs" "$@"
+  ;;
+
+probe)
+  need probe-local-models.mjs
+  if [ "$#" -lt 1 ]; then die "usage: pc probe <base-url>" "    pc probe $BASE_URL"; fi
+  exec node "$DIR/probe-local-models.mjs" --base-url "$1" "$@"
+  ;;
+
+generate)
+  need make-models-json.mjs
+  url=${1:-}
+  if [ -z "$url" ]; then
+    die "usage: pc generate <base-url> [outfile]" \
+"Probes the endpoint and writes a models.json containing only models that clear
+the HARD tool-calling tier. baseUrl is baked in - it is not env-interpolated.
+
+    pc generate $BASE_URL"
+  fi
+  out=${2:-$MODELS}
+  node "$DIR/make-models-json.mjs" --base-url "$url" --out "$out"
+  mkdir -p "$AGENT_DIR"
+  cp "$out" "$AGENT_DIR/models.json"
+  printf '\npc: installed %s -> %s/models.json\n' "$out" "$AGENT_DIR"
+  ;;
+
+aggregate)
+  need aggregate.mjs
+  if [ ! -d "$RESULTS" ]; then
+    die "no results directory at $RESULTS" \
+        "Mount it:  -v ~/pi-contracts-results:/results"
+  fi
+  exec node "$DIR/aggregate.mjs" "$RESULTS" "$@"
+  ;;
+
+auth)
+  # Two tiers by design. The LOCAL tier needs no credentials at all, which is
+  # the point: the worker runs untrusted against your files with no API key
+  # anywhere near it. Frontier models are for planning and review, and those
+  # need credentials — mounted in, never baked into the image.
+  if [ -n "${1:-}" ] && [ -f "$1" ]; then
+    mkdir -p "$AGENT_DIR"
+    if [ "$1" != "$AGENT_DIR/auth.json" ]; then
+      cp "$1" "$AGENT_DIR/auth.json" || die "cannot install auth.json"
+    fi
+    printf 'pc: installed %s -> %s/auth.json\n' "$1" "$AGENT_DIR"
+  fi
+  if [ -f "$AGENT_DIR/auth.json" ]; then
+    printf 'credentials: present at %s/auth.json\n' "$AGENT_DIR"
+    printf '  providers: '
+    grep -oE '"[a-z][a-z0-9_-]*":[[:space:]]*\{' "$AGENT_DIR/auth.json" 2>/dev/null \
+      | head -4 | tr -d '" {:' | tr '\n' ' '
+    printf '\n'
+  else
+    printf 'credentials: NONE\n'
+    printf '  Local models (local/...) work without any credentials.\n'
+    printf '  For a frontier model, mount yours:\n'
+    printf '    -v ~/.pi/agent/auth.json:/home/node/.pi/agent/auth.json:ro\n'
+    printf '  or for an API-key provider, declare it in models.json with\n'
+    printf '  apiKey: "$SOME_ENV_VAR" and pass -e SOME_ENV_VAR=...\n'
+  fi
+  ;;
+
+harness)
+  need run-probes.mjs
+  need_models
+
+  # Flag form: forward everything untouched and let run-probes own parsing. An
+  # earlier version parsed positionally only, so `pc harness --repo /project ...`
+  # took '--repo' as the model name and shifted every later argument.
+  case ${1:-} in
+    -*)
+      # Echo what is actually being forwarded. A flag silently dropped by a
+      # quoting mistake is otherwise invisible until a wrong model runs.
+      printf 'pc: forwarding: %s\n' "$*"
+      exec node "$DIR/run-probes.mjs" \
+        --guards "$DIR/generated/guards.json" \
+        --results "$RESULTS" \
+        "$@"
+      ;;
+  esac
+
+  # Positional form: <model-id> [task] [n]
+  model=${1:-}
+  if [ -z "$model" ]; then
+    die "usage: pc harness [flags] | <model-id> [task] [n]" \
+"    pc harness --model local/MODEL --task unverified --n 5
+    pc harness local/MODEL unverified 5"
+  fi
+  task=${2:-adversarial}
+  n=${3:-5}
+  label=$(printf '%s' "$model" | tr -c 'A-Za-z0-9._-' '_')
+  exec node "$DIR/run-probes.mjs" \
+    --task "$task" \
+    --n "$n" \
+    --guards "$DIR/generated/guards.json" \
+    --model "$model" \
+    --results "$RESULTS" \
+    --label "$label-$task"
+  ;;
+
+check)
+  if [ -f /ctx/check-dockerfile.mjs ]; then
+    exec node /ctx/check-dockerfile.mjs "$@"
+  fi
+  die "check-dockerfile.mjs is a host-side tool" \
+      "    cd /workspace/pi-contracts-research && ./build.sh"
+  ;;
+
+help|*)
+  grep '^#   pc ' "$0" | sed 's/^#   //'
+  ;;
+esac

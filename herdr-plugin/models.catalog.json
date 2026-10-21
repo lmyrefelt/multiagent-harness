@@ -1,0 +1,399 @@
+{
+  "_comment": [
+    "Models the router (scripts/route-worker.mjs) may pick for a WORKER. Edit freely.",
+    "tier: 1 local, 2 free/cheap cloud, 3 strong, 4 frontier. The router takes the lowest tier that",
+    "is >= the change's minimum (size S/M/L/XL -> 1/2/3/4; high risk -> 3; visual -> 3 + visual:true).",
+    "cost: local | free | sub (subscription, quota-limited) | metered (pay per token) - cheaper first.",
+    "quotas: usage keys that must stay above quota_floor_pct (claude_5h/claude_weekly from the Claude",
+    "statusline, gemini_5h/gemini_weekly/agy3p_* from Antigravity, codex_5h/codex_weekly from ~/.codex,",
+    "openrouter_free from OpenRouter /api/v1/key). health_match: provider name in overload errors -",
+    "breaker_threshold such errors in the last hour take the model out of rotation for that hour.",
+    "visual: true = trusted with SVG/CSS/canvas/sprites/UI art (owner: Opus 5.5 or gpt-6-astra).",
+    "preference: small +/- nudge within the same tier and cost (lower = preferred).",
+    "openai-codex/* = GPT models on the Codex Plus subscription (pi's ChatGPT login); usage % is read via",
+    "chatgpt.com/backend-api/wham/usage. openai/* = the metered API key - disabled.",
+    "score_name: the model's public name for the Scores view (scripts/model-scores.mjs), when the id does not say it.",
+    "opencodego_5h/weekly/monthly: OpenCode Go plan usage (opencode.ai/zen/go/v1/usage, key in ~/.harness/config/opencode-go.key or pi's opencode-go login).",
+    "context_window: tokens, from pi's own model table - used for the sidebar's ctx % (scripts/usage-meters.mjs).",
+    "visual_min_design: Open Design Arena score that makes a model visual-capable without visual:true. change_tokens: rough tokens per change size, checked against the plan's allowance (Real API Pricing). pricing_plans: which plan each provider bills through.",
+    "backends: agent tools that can run a model, tried in backend_priority order (opencode before pi); backend_weight adds to the cost of picking that backend (negative = preferred).",
+    "tier_for: {\"<risk>:<size>\": tier} - the model counts as that tier for that kind of change only. visual_fallback_penalty (default 12): for visual work, a model that is not visual:true (it only qualifies by design score) comes after the owner's visual models.",
+    "min_tier_by_risk: sets the minimum tier per risk and size (owner: low/medium-risk L starts at tier 2). free_first: for these risks and sizes, without visuals and before any struggle, free/local models get `bonus` points off so they lead; 2 change requests or failed qualifications move the change up a tier and switch it off. wait_for_reset_hours: when nothing is usable at the needed tier, the strongest OTHER agent takes it (never below tier 3 for high risk / visual); only when no agent at all can, wait for a quota that resets within this many hours."
+  ],
+  "quota_floor_pct": 15,
+  "breaker_threshold": 6,
+  "models": [
+    {
+      "id": "local/qwen3-coder-30b-6bit",
+      "backend": "pi",
+      "tier": 1,
+      "cost": "local",
+      "score_name": "qwen3-coder-30b"
+    },
+    {
+      "id": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "free",
+      "quotas": [
+        "openrouter_free"
+      ],
+      "health_match": "nvidia",
+      "context_window": 1000000
+    },
+    {
+      "id": "opencode/default",
+      "backend": "opencode",
+      "tier": 2,
+      "cost": "sub",
+      "preference": -2.0,
+      "note": "OpenCode CLI worker backend",
+      "quotas": [
+        "opencodego_5h",
+        "opencodego_weekly",
+        "opencodego_monthly"
+      ],
+      "health_match": "opencode",
+      "context_window": 1000000,
+      "backends": [
+        "opencode",
+        "pi"
+      ]
+    },
+    {
+      "id": "opencode-go/longcat-2.5-preview-free",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "sub",
+      "health_match": "opencode",
+      "preference": -0.5,
+      "note": "OpenCode Go ($10/month)",
+      "quotas": [
+        "opencodego_5h",
+        "opencodego_weekly",
+        "opencodego_monthly"
+      ],
+      "context_window": 1000000,
+      "backends": [
+        "opencode",
+        "pi"
+      ]
+    },
+    {
+      "id": "antigravity/gemini-3.8-flash",
+      "backend": "antigravity",
+      "tier": 2,
+      "cost": "sub",
+      "quotas": [
+        "gemini_5h",
+        "gemini_weekly"
+      ],
+      "note": "Gemini AI Pro · counts as tier 3 for medium-risk M only (owner)",
+      "context_window": 1048576,
+      "tier_for": {
+        "medium:M": 3
+      }
+    },
+    {
+      "id": "opencode/deepseek-v4.1-flash",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "metered",
+      "health_match": "opencode",
+      "note": "OpenCode Zen credit ($20)",
+      "context_window": 1000000,
+      "backends": [
+        "opencode",
+        "pi"
+      ]
+    },
+    {
+      "id": "openai-codex/gpt-6-luna",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "sub",
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "note": "Codex Plus via pi's openai-codex provider",
+      "context_window": 272000
+    },
+    {
+      "id": "opencode-go/mimo-v2.6-flash",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "sub",
+      "quotas": [
+        "opencodego_5h",
+        "opencodego_weekly",
+        "opencodego_monthly"
+      ],
+      "health_match": "opencode",
+      "context_window": 1048576,
+      "note": "OpenCode Go plan - what the workers run today Own record 2026-10-16: 52 guard violations / 44 blocked / 3 hard stops in 710 turns - ranked below deepseek-v4.1-flash.",
+      "backends": [
+        "opencode",
+        "pi"
+      ],
+      "preference": 2
+    },
+    {
+      "id": "opencode-go/deepseek-v4.1-flash",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "sub",
+      "quotas": [
+        "opencodego_5h",
+        "opencodego_weekly",
+        "opencodego_monthly"
+      ],
+      "health_match": "opencode",
+      "context_window": 1000000,
+      "note": "OpenCode Go plan (the same model on opencode/ Zen is pay-per-token)",
+      "backends": [
+        "opencode",
+        "pi"
+      ]
+    },
+    {
+      "id": "opencode/big-pickle",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "free",
+      "enabled": true,
+      "note": "OpenCode Zen free model - runs in the opencode worker (no pi API key needed).",
+      "context_window": 200000,
+      "backends": [
+        "opencode"
+      ]
+    },
+    {
+      "id": "opencode/deepseek-v4.1-flash-free",
+      "backends": [
+        "opencode",
+        "pi"
+      ],
+      "tier": 2,
+      "cost": "free",
+      "health_match": "opencode",
+      "context_window": 1000000,
+      "score_name": "deepseek-v4.1-flash",
+      "note": "OpenCode Zen free variant (rate-limited). · owner default for OpenCode (2026-10-18)",
+      "preference": -0.5
+    },
+    {
+      "id": "openai/gpt-6-luna",
+      "backend": "pi",
+      "tier": 2,
+      "cost": "metered",
+      "note": "pay-per-token OpenAI API key - off; the openai-codex/ entries use the Codex Plus subscription instead",
+      "enabled": false,
+      "context_window": 272000
+    },
+    {
+      "id": "codex/default",
+      "backend": "codex",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "preference": 0.5,
+      "note": "replaced by codex/gpt-6.1-sol (explicit model)",
+      "score_name": "gpt-6.1-sol",
+      "enabled": false
+    },
+    {
+      "id": "codex/gpt-6.1-sol",
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "note": "GPT-6.1 Sol in the Codex CLI (Codex Plus)",
+      "score_name": "gpt-6.1-sol"
+    },
+    {
+      "id": "codex/gpt-6-sol",
+      "backend": "codex",
+      "model": "gpt-6-sol",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "preference": 0.5,
+      "enabled": false,
+      "note": "GPT-6 Sol in the Codex CLI - enable once the model id is confirmed (codex --model gpt-6-sol)",
+      "score_name": "gpt-6-sol"
+    },
+    {
+      "id": "claude/sonnet",
+      "backend": "claude",
+      "model": "sonnet",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "claude_5h",
+        "claude_weekly"
+      ],
+      "note": "Claude Pro",
+      "score_name": "claude-sonnet-5.5",
+      "context_window": 1000000
+    },
+    {
+      "id": "openai-codex/gpt-6.1-sol",
+      "backend": "pi",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "preference": -0.5,
+      "note": "Codex Plus via pi; preferred over the codex CLI container (pi has the full guard stack)",
+      "context_window": 272000
+    },
+    {
+      "id": "openai/gpt-6.1-sol",
+      "backend": "pi",
+      "tier": 3,
+      "cost": "metered",
+      "note": "pay-per-token OpenAI API key - off; the openai-codex/ entries use the Codex Plus subscription instead",
+      "enabled": false,
+      "context_window": 272000
+    },
+    {
+      "id": "anthropic/claude-sonnet-5-5",
+      "backend": "pi",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "claude_5h",
+        "claude_weekly"
+      ],
+      "context_window": 1000000,
+      "score_name": "claude-sonnet-5.5",
+      "enabled": false,
+      "note": "Claude Pro through pi's own Anthropic login (full guard stack). Enable after /login (Anthropic) in a harness pi session."
+    },
+    {
+      "id": "claude/opus",
+      "backend": "claude",
+      "model": "opus",
+      "tier": 4,
+      "cost": "sub",
+      "visual": true,
+      "quotas": [
+        "claude_5h",
+        "claude_weekly"
+      ],
+      "note": "Opus 5.5 - if your plan does not offer Opus in Claude Code, set model to sonnet",
+      "score_name": "claude-opus-5.5",
+      "context_window": 1000000
+    },
+    {
+      "id": "openai-codex/gpt-6-astra",
+      "backend": "pi",
+      "tier": 4,
+      "cost": "sub",
+      "visual": true,
+      "quotas": [
+        "codex_5h",
+        "codex_weekly"
+      ],
+      "note": "Codex Plus via pi Drains Codex Plus ~5.5x faster than gpt-6.1-sol (Real API Pricing) without a better coding-agent or design score.",
+      "context_window": 272000,
+      "preference": 1.5
+    },
+    {
+      "id": "openai/gpt-6-astra",
+      "backend": "pi",
+      "tier": 4,
+      "cost": "metered",
+      "visual": true,
+      "note": "pay-per-token OpenAI API key - off; the openai-codex/ entries use the Codex Plus subscription instead Drains Codex Plus ~5.5x faster than gpt-6.1-sol (Real API Pricing) without a better coding-agent or design score.",
+      "enabled": false,
+      "context_window": 272000,
+      "preference": 1.5
+    },
+    {
+      "id": "anthropic/claude-opus-5-5",
+      "backend": "pi",
+      "tier": 4,
+      "cost": "sub",
+      "visual": true,
+      "quotas": [
+        "claude_5h",
+        "claude_weekly"
+      ],
+      "context_window": 1000000,
+      "score_name": "claude-opus-5.5",
+      "enabled": false,
+      "note": "Claude Pro through pi's own Anthropic login. ~60x cheaper per token than Opus via OpenRouter. Enable after /login (Anthropic)."
+    }
+  ],
+  "change_hours": {
+    "S": 1,
+    "M": 3,
+    "L": 8,
+    "XL": 16
+  },
+  "context_windows": {
+    "openrouter/anthropic/claude-opus-5.5": 1000000,
+    "openai/gpt-5.5": 272000,
+    "openai-codex/gpt-5.5": 272000
+  },
+  "visual_min_design": 85,
+  "change_tokens": {
+    "S": 5000000,
+    "M": 20000000,
+    "L": 60000000,
+    "XL": 150000000
+  },
+  "pricing_plans": {
+    "openai-codex": "ChatGPT Plus",
+    "codex": "ChatGPT Plus",
+    "claude": "Claude Pro",
+    "anthropic": "Claude Pro",
+    "opencode-go": "OpenCode Go",
+    "antigravity": "Google AI Pro"
+  },
+  "backend_priority": [
+    "opencode",
+    "pi",
+    "codex",
+    "claude",
+    "antigravity"
+  ],
+  "backend_weight": {
+    "opencode": -1.5
+  },
+  "min_tier_by_risk": {
+    "low": {
+      "L": 2
+    },
+    "medium": {
+      "L": 2
+    }
+  },
+  "wait_for_reset_hours": 12,
+  "free_first": {
+    "risks": [
+      "low",
+      "medium"
+    ],
+    "sizes": [
+      "S",
+      "M",
+      "L"
+    ],
+    "bonus": 4
+  }
+}

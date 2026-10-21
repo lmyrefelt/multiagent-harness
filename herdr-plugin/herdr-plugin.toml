@@ -1,0 +1,80 @@
+# harness-lifecycle-watcher — closes the human-latency gap in COORDINATION.md's
+# change lifecycle: a worker/integrator pane going idle used to need a human
+# to notice and manually run the next launch-*.sh. This reacts to Herdr's
+# own pane.agent_status_changed event instead - a deterministic state
+# machine (lifecycle-watcher.mjs), not an LLM orchestrator.
+#
+# NOT independently tested end-to-end by the agent that wrote this - Herdr
+# runs on the owner's own machine. See lifecycle-watcher.mjs's own header
+# for exactly what is VERIFIED (the event/socket schema, fetched from real
+# docs) vs what the first real launch is the actual test of.
+#
+# Install:
+#   herdr plugin link /path/to/this/repo/herdr-plugin
+#   herdr plugin enable harness.lifecycle-watcher
+#
+# lifecycle-watcher.mjs resolves the repo root via `git rev-parse
+# --show-toplevel`, run from whatever cwd Herdr spawns this command in -
+# NOT independently confirmed to be inside the repo checkout. If the first
+# real event fires and nothing happens, set HARNESS_REPO_ROOT explicitly (an
+# absolute path to this repo) in your shell environment before starting
+# Herdr, or switch the `command` below to `["/bin/sh", "-c",
+# "HARNESS_REPO_ROOT=/absolute/path/to/repo node lifecycle-watcher.mjs"]`.
+
+id = "harness.lifecycle-watcher"
+name = "Harness change-lifecycle watcher"
+version = "0.4.0"
+min_herdr_version = "0.9.0"
+description = "Routes the planner -> integrator -> worker handoff: agents report a verdict with scripts/handoff.mjs, this hook prompts or launches the next role per herdr-plugin/pipeline.json (dry-run until mode is live)."
+platforms = ["macos", "linux"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["/bin/sh", "run-watcher.sh"]
+
+# Keep the pane registry (.pi-session/herdr-lifecycle/panes.json) honest.
+[[events]]
+on = "pane.exited"
+command = ["/bin/sh", "run-watcher.sh"]
+
+[[events]]
+on = "pane.closed"
+command = ["/bin/sh", "run-watcher.sh"]
+
+# Herdr has no timer. So that a handoff recorded while every pane sat idle is not stuck
+# until the next status change, a throttled reconcile (max once per 15 s) also runs when
+# Herdr starts, when you focus a pane, and when a new agent is detected in a pane.
+# (Pattern borrowed from github.com/pinkpixel-dev/quota's Herdr plugin, Apache-2.0.)
+[[startup]]
+command = ["/bin/sh", "run-watcher.sh", "--nudge", "startup"]
+
+[[events]]
+on = "pane.focused"
+command = ["/bin/sh", "run-watcher.sh"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["/bin/sh", "run-watcher.sh"]
+
+# Bind these in ~/.config/herdr/config.toml, e.g.
+#   [[keys.command]]
+#   key = "prefix+h"
+#   type = "plugin_action"
+#   command = "johannas-verden.lifecycle-watcher.reconcile"
+[[actions]]
+id = "reconcile"
+title = "Harness: deliver pending handoffs now"
+command = ["/bin/sh", "run-watcher.sh", "--nudge", "action"]
+
+[[actions]]
+id = "dashboard"
+title = "Harness: open the dashboard"
+command = ["/bin/sh", "open-dashboard.sh"]
+
+# The dashboard as a Herdr plugin pane (layout from github.com/senna-lang/herdr-agent-usage):
+#   herdr plugin pane open --plugin <this id> --entrypoint dashboard
+[[panes]]
+id = "dashboard"
+title = "Harness"
+placement = "split"
+command = ["/bin/sh", "run-dashboard.sh"]

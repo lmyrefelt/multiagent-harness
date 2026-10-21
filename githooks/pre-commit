@@ -1,0 +1,23 @@
+#!/bin/sh
+# -----------------------------------------------------------------------------
+# pre-commit — the harness-independent boundary net.
+#
+# Runs on YOUR machine before each commit. No CI, no cloud, no services. It only
+# acts when you are on a feature/CHANGE-NNNN branch; on any other branch it does
+# nothing and gets out of the way.
+#
+# Install once per clone (see docs/changes/HOW-TO-ADD-A-FEATURE.md):
+#     git config core.hooksPath .githooks
+#
+# To bypass in a genuine emergency (and only then):
+#     git commit --no-verify
+# -----------------------------------------------------------------------------
+set -e
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node not found; skipping boundary check." >&2
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec node "$ROOT/scripts/check-boundary.mjs"

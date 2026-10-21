@@ -1,0 +1,224 @@
+{
+  "_comment": [
+    "Routing table for herdr-plugin/lifecycle-watcher.mjs (spoolway-style on_pass/on_fail, virtualboard-style 'agent reports, dispatcher moves').",
+    "An agent ends its turn with: node scripts/handoff.mjs report --change CHANGE-NNNN --role <role> --verdict <verdict>.",
+    "The watcher looks up routes[<verdict>] and either prompts a live pane of the target role (herdr agent prompt), launches one (scripts/herdr-launch.sh), or notifies you.",
+    "mode: 'dry-run' only writes what it WOULD do to .pi-session/herdr-lifecycle/events.log. Set 'live' to act.",
+    "Prompt placeholders: {change} {round} {file} {file_hint} {note} {note_hint} {branch} {sha} {role} {verdict} {report} {new}.",
+    "report_cmd: how agents run the reporter. Every launch-*.sh mounts the main checkout at /repo, so /repo/scripts/handoff.mjs is always the current version, even in a worktree branched before it existed.",
+    "Handoff reports: every role writes its report from docs/changes/handoff-template.<role>.md via `handoff.mjs new`; `handoff.mjs report` refuses incomplete reports. {file_hint} points the next role at the previous report.",
+    "needs-qualification: route to: runner runs `command` on the host (detached, log in .pi-session/qualify/<change>/runner.log). scripts/godot-qualify.mjs ships the exact commit to the Linux Godot host (scripts/godot-remote.sh) and records runner qualified | qualification-failed | blocked.",
+    "qualified goes back to whoever asked (to: requester, by_requester prompts); qualification-failed always goes to the worker.",
+    "Role-specific routes: routes[<verdict>].by_role.<role> overrides the route for that reporter (worker/runner 'blocked' -> integrator). Harness entries (role harness: resume, stalled, repeated-failure) and owner entries (role human: merge-approved) route like any other verdict."
+  ],
+  "mode": "dry-run",
+  "report_cmd": "node /repo/scripts/handoff.mjs report",
+  "new_cmd": "node /repo/scripts/handoff.mjs new",
+  "max_rounds": {
+    "plan": 5,
+    "impl": 5
+  },
+  "remind_after_seconds": 180,
+  "close_worker_on_merge": true,
+  "auto_continue": {
+    "enabled": true,
+    "message": "continue",
+    "max_per_hour": 3,
+    "bottom_lines": 6,
+    "_comment": "When an agent pane goes idle with a transient model/API error in its last lines (e.g. 'Retry failed after 3 attempts: A Timeout Occurred', 503, overloaded, rate limited), the watcher types `message` into it. Never twice for an unchanged screen; after max_per_hour it notifies you instead. Optional 'patterns': [regex,...] replaces the built-in list (lifecycle-watcher.mjs DEFAULT_TRANSIENT_ERRORS)."
+  },
+  "_close_worker_on_merge": "After an integrator merged verdict the watcher stops the change's worker container (harness-<change>*) and closes its Herdr pane. Waits if the worker is still working. false = leave it open.",
+  "worker_backend_by_risk": {
+    "low": "auto",
+    "medium": "auto",
+    "high": "auto",
+    "critical": "human"
+  },
+  "auto_backends": [
+    "opencode",
+    "pi",
+    "codex",
+    "claude",
+    "antigravity"
+  ],
+  "routes": {
+    "plan-requested": {
+      "to": "planner",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the integrator asks you to plan this change{note_hint}.{file_hint} Follow AGENTS.md's planner dispatch for {change}: write discovery.md and specification.md, define the test seams, and fill change.yaml (owned_paths, requirements, risk tier, tests.command) on your planning branch. Then write your handoff from the standard template: run {new} --role planner and fill every section. As your LAST action run: {report} --role planner --verdict plan-ready --file <that handoff file> --note '<one line>'. If you need the owner, use --verdict question - only for what only the owner can decide; for a decision the integrator can make (ownership, contracts, sequencing) use --verdict needs-decision --file <proposal> --note '<the decision needed>'."
+    },
+    "plan-ready": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the planner reports the plan is ready for review (plan round {round}{note_hint}).{file_hint} Review the plan as it stands on {branch}{sha}. Write your review from the standard template: run {new} --role integrator (it creates the next integrator-review-N.md) and fill every section - give each finding a stable ID (F1, F2, ...) and re-check every ID from your previous review. If you approve: set status: approved and branch: in change.yaml, add the routing block (see below) and land the planning docs on main as COORDINATION.md describes. As your LAST action record exactly one verdict: {report} --role integrator --verdict plan-approved|plan-changes-requested --file <that review file> --note '<one line>'. If you need the owner, use --verdict question - only for what only the owner can decide; for a decision the integrator can make (ownership, contracts, sequencing) use --verdict needs-decision --file <proposal> --note '<the decision needed>'. When you approve, also add a routing block to change.yaml for the worker router: routing: {complexity: S|M|L|XL, visual: true|false, reason: '<one line>'} - S = small/mechanical, M = normal feature, L = cross-cutting or subtle, XL = hardest; visual: true for SVG/CSS/canvas/sprites/icons/shaders/UI art or layout work."
+    },
+    "plan-changes-requested": {
+      "to": "planner",
+      "delivery": "prompt-or-launch",
+      "loop": "plan",
+      "prompt": "[handoff] {change}: the integrator requested plan changes (plan round {round}).{file_hint} Address every finding by its ID; do not re-derive the findings yourself. Commit on your planning branch. Then write your handoff from the standard template: run {new} --role planner and fill every section ('Addressed from previous review' answers each finding ID). As your LAST action run: {report} --role planner --verdict plan-ready --file <that handoff file> --note '<what changed>'. If you need the owner, use --verdict question - only for what only the owner can decide; for a decision the integrator can make (ownership, contracts, sequencing) use --verdict needs-decision --file <proposal> --note '<the decision needed>'."
+    },
+    "plan-approved": {
+      "to": "worker",
+      "delivery": "launch",
+      "prompt": "Implement {change}. The integrator approved the plan.{file_hint} When implementation is done (status: review, change.yaml handover filled), write your handoff from the standard template: run {new} --role worker and fill every section. As your LAST action run: {report} --role worker --verdict impl-ready --file <that handoff file> --note '<one line>'. If you are stuck, use --verdict blocked; if you need the owner, --verdict question - only for what only the owner can decide; for a decision the integrator can make (ownership, contracts, sequencing) use --verdict needs-decision --file <proposal> --note '<the decision needed>'."
+    },
+    "impl-ready": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the worker reports the implementation is ready for review{note_hint}.{file_hint} Review it in its worktree ({branch}{sha}) per CHANGE-REVIEW.md. If the change touches godot-project/ and there is no runner 'qualified' entry for this exact commit yet, do NOT merge: run {report} --role integrator --verdict needs-qualification --note '<what to look at>' and end your turn - the Godot render host checks, exports (and for visual changes renders screenshots of) that commit and you are prompted with the evidence. Write your review from the standard template: run {new} --role integrator and fill every section (stable finding IDs; re-check earlier IDs). As your LAST action record exactly one verdict: {report} --role integrator --verdict merged|impl-changes-requested|needs-human --file <that review file> --note '<one line>'. Use needs-human when integrator_merge_gate refuses the merge (high risk / reviewer_required). After a merged verdict, if the roadmap names the next change, reserve it (allocate the CHANGE id, commit its folder on main) and start its planning yourself with one more report: node /repo/scripts/handoff.mjs report --change CHANGE-NNNN --role integrator --verdict plan-requested --file <the brief or research doc the planner must read> --note '<scope in one line>'. Never ask the owner to paste a prompt to the planner."
+    },
+    "impl-changes-requested": {
+      "to": "worker",
+      "delivery": "prompt-or-launch",
+      "loop": "impl",
+      "prompt": "[handoff] {change}: the integrator requested implementation changes (round {round}).{file_hint} Fix exactly what it names, by finding ID. Then write your handoff from the standard template: run {new} --role worker and fill every section. As your LAST action run: {report} --role worker --verdict impl-ready --file <that handoff file> --note '<what changed>'."
+    },
+    "merged": {
+      "to": "human",
+      "notify": "{change} merged and complete.{note_hint}"
+    },
+    "needs-human": {
+      "to": "human",
+      "notify": "{change} needs you: {note} (if it is a merge the gate refused: node scripts/handoff.mjs approve-merge --change {change})"
+    },
+    "question": {
+      "to": "human",
+      "notify": "{change}: the {role} has a question for you: {note} - answer with: node scripts/handoff.mjs answer --change {change} --note '<answer>'"
+    },
+    "blocked": {
+      "to": "human",
+      "notify": "{change}: the {role} is blocked: {note}",
+      "by_role": {
+        "worker": {
+          "to": "integrator",
+          "delivery": "prompt-or-launch",
+          "prompt": "[handoff] {change}: the {role} is BLOCKED{note_hint}.{file_hint} You own unblocking it - the owner is not told unless you escalate. Try the standard fixes yourself first: (1) branch behind main / guard forbids git merge -> the harness already tried scripts/sync-worker.sh {change}; if that failed, resolve the conflict on the worker branch or tell the worker how; (2) a path, test or file the worker needs is not granted -> amend owned_paths/grants in change.yaml on main (holding the integrator lock) and regenerate guards with scripts/sync-worker.sh {change}; (3) a prerequisite change is not merged -> the harness parks the change and resumes it automatically when the prerequisite merges; if the prerequisite itself is stuck, act on THAT change; (4) a missing decision -> decide it (you are the orchestrator) and write it down; (5) a render-host/runner problem -> re-request qualification with {report} --role integrator --verdict needs-qualification --note '<why it is safe to retry>'. Read .pi-session/STATUS.md for the state of every change. Then hand back with ONE verdict as your LAST action: to the worker {report} --role integrator --verdict impl-changes-requested --file <your review/decision> --note '<what you fixed and what the worker does next>'; only if it truly needs the owner: --verdict needs-human --note '<exactly what, with your recommendation>'."
+        },
+        "runner": {
+          "to": "integrator",
+          "delivery": "prompt-or-launch",
+          "prompt": "[handoff] {change}: the {role} is BLOCKED{note_hint}.{file_hint} You own unblocking it - the owner is not told unless you escalate. Try the standard fixes yourself first: (1) branch behind main / guard forbids git merge -> the harness already tried scripts/sync-worker.sh {change}; if that failed, resolve the conflict on the worker branch or tell the worker how; (2) a path, test or file the worker needs is not granted -> amend owned_paths/grants in change.yaml on main (holding the integrator lock) and regenerate guards with scripts/sync-worker.sh {change}; (3) a prerequisite change is not merged -> the harness parks the change and resumes it automatically when the prerequisite merges; if the prerequisite itself is stuck, act on THAT change; (4) a missing decision -> decide it (you are the orchestrator) and write it down; (5) a render-host/runner problem -> re-request qualification with {report} --role integrator --verdict needs-qualification --note '<why it is safe to retry>'. Read .pi-session/STATUS.md for the state of every change. Then hand back with ONE verdict as your LAST action: to the worker {report} --role integrator --verdict impl-changes-requested --file <your review/decision> --note '<what you fixed and what the worker does next>'; only if it truly needs the owner: --verdict needs-human --note '<exactly what, with your recommendation>'."
+        }
+      },
+      "_comment": "worker/runner blocks go to the integrator (owner 2026-10-18); planner/integrator blocks still go to the owner."
+    },
+    "needs-qualification": {
+      "to": "runner",
+      "command": "node scripts/godot-qualify.mjs --change {change}",
+      "notify": "{change}: Godot qualification started on the render host"
+    },
+    "qualified": {
+      "to": "requester",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: Godot qualification PASSED on the render host{sha}{note_hint}.{file_hint} The summary lists the evidence folders; for a visual change open every screenshot PNG it lists and check it against the style guide and the spec. Then finish your review from the standard template ({new} --role integrator) and as your LAST action record exactly one verdict: {report} --role integrator --verdict merged|impl-changes-requested|needs-human --file <that review file> --note '<one line>'.",
+      "by_requester": {
+        "integrator": {
+          "prompt": "[handoff] {change}: Godot qualification PASSED on the render host{sha}{note_hint}.{file_hint} The summary lists the evidence folders; for a visual change open every screenshot PNG it lists and check it against the style guide and the spec. Then finish your review from the standard template ({new} --role integrator) and as your LAST action record exactly one verdict: {report} --role integrator --verdict merged|impl-changes-requested|needs-human --file <that review file> --note '<one line>'."
+        },
+        "worker": {
+          "prompt": "[handoff] {change}: Godot qualification PASSED on the render host{sha}{note_hint}.{file_hint} Evidence for that commit is in /repo/.pi-session/qualify/{change}/<sha12>/ (check/ and export/ each hold revision.txt + PASSED.txt; render/ holds screenshots for visual changes - open them and compare with the spec). Godot is not installed in your container, so your tests.command must accept that runner evidence for HEAD instead of running the engine itself (never as a skip: fail if revision.txt is not HEAD or PASSED.txt is missing). Make sure it passes, write your handoff from the standard template ({new} --role worker) citing the evidence, and as your LAST action run: {report} --role worker --verdict impl-ready --file <that handoff file> --note '<one line>'. If you change Godot code after this, request a new run with --verdict needs-qualification first."
+        }
+      }
+    },
+    "qualification-failed": {
+      "to": "worker",
+      "delivery": "prompt-or-launch",
+      "loop": "impl",
+      "prompt": "[handoff] {change}: Godot qualification FAILED on the render host (round {round}){note_hint}.{file_hint} The summary has the failing job's log tail; full logs are in the evidence folders it lists. Fix the cause and commit. Then write your handoff from the standard template: run {new} --role worker and fill every section. As your LAST action run: {report} --role worker --verdict impl-ready --file <that handoff file> --note '<what changed>'."
+    },
+    "needs-decision": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the {role} needs a decision from you{note_hint}.{file_hint} You are the orchestrator: decide what you can yourself (contracts, ownership between changes, sequencing, boundaries, ADR amendments within the approved direction). Write the decision down: run {new} --role integrator and fill it as a decision record (findings = the decisions, each with an ID), and commit any ADR/plan amendment it needs on main. Then hand back with exactly one verdict as your LAST action - to the planner: {report} --role integrator --verdict plan-changes-requested --file <that file> --note '<decision>' (or plan-approved if the plan stands as is); to a worker: {report} --role integrator --verdict impl-changes-requested --file <that file> --note '<decision>'. Only if it truly needs the owner (scope, priorities, money, outside people): {report} --role integrator --verdict question --note '<exactly what the owner must decide, with your recommendation>'. Never ask the owner to relay anything to another role."
+    },
+    "resume": {
+      "to": "worker",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the harness resumed you{note_hint}.{file_hint} Your branch has been synced with main and your contract guards regenerated - run git log -3 to see the new base. Pick up exactly where you stopped (read your last worker handoff and the newest integrator review in the change folder first). When done: run {new} --role worker, fill it, and as your LAST action {report} --role worker --verdict impl-ready --file <that handoff file> --note '<what changed>'. If you are still blocked, say precisely by what: {report} --role worker --verdict blocked --note '<what, and who must act>'."
+    },
+    "stalled": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the harness watchdog needs you{note_hint}.{file_hint} That triage file has the last ledger entries, the watcher events and the failing log tail. Do not wait for the owner: find the cause and act - fix grants/sync/locks yourself, relaunch or redirect the worker (impl-changes-requested with a written diagnosis), re-request qualification, re-plan (plan-requested), or decide. Record what you did with exactly one verdict as your LAST action ({report} --role integrator --verdict <verdict> --file <your review> --note '<one line>'). Use needs-human only for what only the owner can decide."
+    },
+    "repeated-failure": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the same qualification failed twice - diagnose before any retry{note_hint}.{file_hint} That triage file has the last ledger entries, the watcher events and the failing log tail. Do not wait for the owner: find the cause and act - fix grants/sync/locks yourself, relaunch or redirect the worker (impl-changes-requested with a written diagnosis), re-request qualification, re-plan (plan-requested), or decide. Record what you did with exactly one verdict as your LAST action ({report} --role integrator --verdict <verdict> --file <your review> --note '<one line>'). Use needs-human only for what only the owner can decide."
+    },
+    "merge-approved": {
+      "to": "integrator",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the OWNER approved merging this change{sha}{note_hint}. Your merge gate now accepts it (owner approval in the ledger). Claim the integrator lock, merge the exact reviewed/qualified commit per your last review, mark change.yaml complete, release the lock, and as your LAST action: {report} --role integrator --verdict merged --file <your review> --note '<merge commit>'."
+    },
+    "answered": {
+      "to": "asker",
+      "delivery": "prompt-or-launch",
+      "prompt": "[handoff] {change}: the OWNER answered your question{note_hint}.{file_hint} Apply the answer, then finish with exactly one report as usual ({report} --role <your role> --verdict <verdict> --file <your report> --note '<one line>')."
+    }
+  },
+  "reminder_prompt": "[handoff] You went idle without recording a handoff for {change}. If your turn is finished: create your report with {new} --role {role}, fill every section, then run {report} --role {role} --verdict <one of: {allowed}> --file <that file>. If you are waiting for the owner, use --verdict question with the question in --note (no file needed).",
+  "routing": {
+    "mode": "shadow",
+    "_comment": "Worker model routing: shadow = decide + log only (.pi-session/routing/decisions.jsonl, events.log ROUTE(shadow)), live = launch what the router picks, off. Catalog: herdr-plugin/models.catalog.json. Explain a decision: node scripts/route-worker.mjs CHANGE-NNNN"
+  },
+  "watchdog": {
+    "enabled": true,
+    "stall_minutes": 45,
+    "busy_stall_minutes": 40,
+    "check_minutes": 10,
+    "heartbeat_seconds": 120,
+    "_comment": "harness-supervisor.mjs: a change with no progress for stall_minutes (and nobody working on it), or with two qualification failures in a row, is handed to the integrator with a triage file. busy_stall_minutes: a worker pane that shows working but has produced no activity (model output, session log, progress heartbeat of a long tool, commit) for this long is treated as stalled too. heartbeat_seconds: how often the watcher wakes up on its own (deferred handoffs, quota waits, the watchdog, STATUS.md)."
+  },
+  "digest": {
+    "enabled": true,
+    "hours": [
+      8,
+      20
+    ],
+    "_comment": "A short status notification at these local hours; .pi-session/STATUS.md is rewritten on every pass."
+  },
+  "dependencies": {
+    "enabled": true,
+    "_comment": "depends_on in change.yaml: no worker launch while a prerequisite is unmerged; parked changes resume (synced with main) when the last prerequisite merges."
+  },
+  "limits": {
+    "migrate": true,
+    "fallback_order": [
+      "codex",
+      "claude",
+      "pi",
+      "antigravity",
+      "opencode"
+    ],
+    "_comment": "When a pane shows a usage limit (5-hour/weekly/plan) or a context/session limit, the watcher records it (.pi-session/routing/limits.json - the router skips that agent until the reset), closes the pane and continues the work in a new session: workers through the router, integrator/planner on the next backend in fallback_order that is in auto_backends. wait_minutes: a worker on a demanding change (high risk, XL or visual) whose agent hits its usage limit waits for the reset when it is this close and the other agents are weaker; otherwise the work moves. provider_error_*: server errors (OpenCode 'Internal Server Error', HTTP 500, API errors) are auto-continued; provider_error_threshold different errors within provider_error_window_minutes count as an outage: that model (pi/opencode) or agent is skipped for provider_error_cooldown_minutes and the work moves with a handoff brief.",
+    "wait_minutes": 90,
+    "provider_error_threshold": 3,
+    "provider_error_window_minutes": 30,
+    "provider_error_cooldown_minutes": 45
+  },
+  "integrator_names": {
+    "codex": "integrator-Codex",
+    "claude": "integrator-Claude",
+    "pi": "integrator-Pi",
+    "antigravity": "integrator-Antigravity",
+    "_comment": "Name the watcher gives an integrator it launches (scripts/herdr-launch.sh integrator <name> <backend>)."
+  },
+  "fresh_sessions": {
+    "enabled": true,
+    "max_context_pct": 60,
+    "max_compactions": 2,
+    "same_failure_rounds": 2,
+    "default_context_window": 200000,
+    "_comment": "When work goes back to a worker (impl-changes-requested, qualification-failed): continue its session by default; start a FRESH session with a handoff brief when the old one uses >= max_context_pct of its context window, was compacted max_compactions times, after same_failure_rounds rounds of the same failure, or when the integrator's note asks for a re-plan/diagnosis/new approach. After a pause longer than the agent's prompt-cache lifetime (cache_ttl_minutes) the threshold drops to cold_context_pct: the old context is re-read at full price anyway.",
+    "cold_context_pct": 35,
+    "cache_ttl_minutes": {
+      "claude": 5,
+      "pi": 5,
+      "antigravity": 30,
+      "codex": 30,
+      "opencode": 30
+    }
+  }
+}

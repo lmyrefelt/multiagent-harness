@@ -1,0 +1,63 @@
+# Dockerfile.codex — OpenAI Codex CLI, as a guarded worker backend.
+#
+# FROM pi-contracts:latest (not a fresh base) specifically to inherit its
+# already-baked-in checks.mjs engine at /opt/contracts/extensions/checks.mjs -
+# scripts/codex-guard-adapter.mjs (the host project, mounted at /repo at
+# runtime, not baked in here) imports that SAME pure evaluation core pi's own
+# contract-guard.ts uses, via Codex's own hook protocol (an external process,
+# JSON on stdin/stdout per tool call - developers.openai.com/codex/hooks,
+# fetched directly, not assumed).
+#
+# UNLIKE Dockerfile.claude: Codex has no --settings-style flag to point hooks
+# at an arbitrary file, so a single-file bind mount onto ~/.codex/hooks.json
+# IS used (see launch-worker.sh) - mounting the whole ~/.codex/ directory
+# instead was considered and rejected, because that directory also holds
+# config.toml, auth, and session state that a generated directory would
+# clobber. This directory - unlike Dockerfile.agy's antigravity-cli/ mount
+# target, which Antigravity itself writes log/crashes/installation_id into
+# at startup - is understood to be read-only FROM Codex's own perspective
+# (hooks.json is config Codex reads, not state it rewrites), so the EBUSY
+# atomic-rename class of bug that hit the antigravity backend is believed
+# not to apply here - UNVERIFIED either way, flag it if a real launch proves
+# otherwise (same fix as before: move to a dedicated subdirectory mount).
+#
+# Pre-creating ~/.codex/ here (as the node user) avoids the OTHER bug the
+# antigravity backend hit: docker auto-creates a missing bind-mount parent
+# directory as ROOT, before the container's own user ever runs.
+#
+#   docker build -f Dockerfile.codex -t harness-codex:latest .   (context: the host project)
+FROM pi-contracts:latest
+
+USER root
+# npm install (not a native curl installer like Dockerfile.agy/Dockerfile.claude
+# use) - confirmed as the official, documented install path (github.com/openai/
+# codex's own README quickstart); no equivalent one-line native installer script
+# was found for Codex, only building from source via cargo, which is too heavy
+# for an image layer. MEASURED: running this as the node user fails EACCES -
+# pi-contracts:latest's global npm prefix (/usr/local/lib/node_modules) is
+# root-owned, same as any stock node image. Install as root (global packages
+# don't need to be owned by whoever runs them later, only readable), THEN
+# switch to node for anything that actually needs to be node-owned below.
+RUN npm install -g @openai/codex
+
+# MEASURED (2026-10-10, real launch): a worker's test command touching
+# apps/web runs `corepack pnpm --filter harness-web test ...` (the repo's own
+# packageManager field pins pnpm@10.12.1, read by corepack - package.json),
+# but pi-contracts:latest doesn't ship corepack enabled. `npm install -g
+# corepack` + `corepack enable` makes the `corepack pnpm`/bare `pnpm` shims
+# resolve and auto-provision the pinned version on first use (needs network -
+# this container runs with --network host). Same root-ownership reasoning as
+# the codex install above.
+RUN npm install -g corepack@latest && corepack enable
+
+USER node
+# hooks.json's mount target - created ahead of time so the bind-mount has
+# somewhere to land (docker will create it as root-owned otherwise, the exact
+# gotcha Dockerfile.agy's own comments already named for its own mount target).
+RUN mkdir -p /home/node/.codex
+
+WORKDIR /workspace
+# Forwards trailing CMD args into the inner `codex` invocation ($@) - same
+# pattern as Dockerfile.agy/Dockerfile.claude, for the same reason (a fixed
+# -c string could never forward the seed message or the bypass flag).
+ENTRYPOINT ["/bin/bash", "--login", "-c", "codex \"$@\"", "--"]

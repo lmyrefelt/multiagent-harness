@@ -1,0 +1,103 @@
+# =============================================================================
+# project.yaml — the project declares ITSELF.
+#
+# WHY THIS EXISTS
+# The harness had grown eight flags that each GUESSED a piece of a project's
+# structure: --allow, --deny, --require, --prompt, --link-deps, --source, … Each
+# guess was wrong in a different way, and the fixture's assumptions leaked into
+# real runs (the model was told "Implement task T-001 from TASKS.md" at a project
+# that has no TASKS.md, because --prompt was parsed and then discarded).
+#
+# The loop was: observe a mismatch -> add a flag -> add a validation for the
+# flag. That does not converge. Declaring the structure once does.
+#
+# Everything here is OPTIONAL except `project`. Missing entries are simply not
+# asserted, which is different from being asserted wrongly.
+#
+# Flags still work and still override this file, for one-off runs. This is the
+# default, not a replacement.
+# =============================================================================
+
+project: triage-v2
+
+# ---------------------------------------------------------------------------
+# Instructions
+# ---------------------------------------------------------------------------
+# The rules the model must follow. NEVER modified by the harness — the project's
+# own contract wins. The harness only verifies the file exists.
+contract: AGENTS.md
+
+# What the model must read before doing anything. Existence is checked up front so
+# a missing onboarding file costs one second instead of five runs.
+onboarding: docs/triage-v2/AGENT-ONBOARDING.md
+
+# The spec corpus. Not read by the harness; declared so a project can be
+# validated (every glob must match at least one file) and so `pc` can list it.
+specs:
+  - docs/triage-v2/specs/**.md
+
+# ---------------------------------------------------------------------------
+# Task state
+# ---------------------------------------------------------------------------
+# Where "is this task already done" lives. This is the single most valuable
+# declaration in the file: without it the harness cannot tell a model that is
+# refusing a finished task from one that is failing.
+task_state: agent/triage-v2/agent/task-state.json
+
+# ---------------------------------------------------------------------------
+# Boundary: the task's authorized write surface.
+# ---------------------------------------------------------------------------
+# Declared once, here, rather than guessed per run. A worker must be able to
+# write its own state — if task_state is outside `allow`, the worker is
+# structurally incapable of claiming a task, and the harness now says so.
+boundary:
+  allow:
+    - src/**
+    - agent/**
+    - docs/triage-v2/**
+  deny:
+    - node_modules/**
+    - .git/**
+    - "*.md.bak"
+    - "**/__pycache__/**"
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+# The command the project uses to verify itself. The harness captures its output
+# as evidence, so the worker is not asked to re-quote what it already received.
+tests:
+  command: npm test
+  # How to read the output. Used to tell a passing run from a failing one.
+  ran: ["# pass", "ℹ pass", "Tests:", "^ok \\d+"]
+  passed: ["# fail 0", "ℹ fail 0", "0 failed"]
+  failed: ["# fail [1-9]", "ℹ fail [1-9]", "[1-9][0-9]* failed"]
+
+# ---------------------------------------------------------------------------
+# Heavy directories the worker needs but must not modify.
+# ---------------------------------------------------------------------------
+link_deps:
+  - node_modules
+
+# ---------------------------------------------------------------------------
+# What "done" means.
+# ---------------------------------------------------------------------------
+# Stated plainly rather than guessed. The harness CANNOT verify that an
+# implementation satisfies a spec, and it will not pretend to. It reports the
+# things it can observe and leaves this to review.
+#
+# The toy fixture's completion signal is concrete ("sub" exists, suite green).
+# A real project does not have such a signal, so completion is human-judged and
+# the scorecard says `n/a` instead of a misleading DONE / NOT-DONE.
+done_when: human_review
+acceptance_source: docs/triage-v2/specs
+
+# ---------------------------------------------------------------------------
+# What the worker is allowed to invoke, beyond the boundary.
+# ---------------------------------------------------------------------------
+# The contract already forbids git mutation and installs. This is where a
+# project records the exceptions it actually needs, so the exceptions are
+# declared rather than discovered by a model hitting a wall.
+allow_commands:
+  - "^git (status|log|diff|show|branch)( |$)"
+  - "^npm (test|run [a-z-]+)$"

@@ -1,0 +1,29 @@
+FROM node:24-bookworm-slim
+
+ARG PI_VERSION=latest
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git jq ripgrep \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --ignore-scripts \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+ && npm cache clean --force
+
+ENV HOME=/home/node
+
+RUN mkdir -p /workspace /home/node/.pi/agent \
+ && chown -R node:node /workspace /home/node/.pi
+
+USER node
+
+RUN pi install npm:pi-localllm-provider \
+ && pi install npm:pi-omlx-tps \
+ && pi install npm:pi-web-access \
+ && pi install npm:pi-multi-pass \
+ && pi install npm:@juicesharp/rpiv-ask-user-question \
+ && pi install npm:pi-cache-optimizer 
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]

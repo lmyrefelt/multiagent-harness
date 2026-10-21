@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "command(*)",
+      "write_file(*)"
+    ],
+    "deny": [
+      "command(rm -rf)",
+      "command(sudo)",
+      "command(regex:git (push|reset|rebase|merge).*)",
+      "write_file(.git/)"
+    ]
+  }
+}

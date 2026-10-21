@@ -1,0 +1,20 @@
+.DS_Store
+*.bak
+*.orig
+node_modules/
+.pi-session/
+.worktrees/
+.token-baselines/
+.contract-guards*.json
+.contract-evidence.jsonl
+**/.contract-evidence.jsonl
+.pi-contracts-build.fingerprint
+**/.pi-contracts-build.fingerprint
+# secrets never belong here
+.env
+*.env
+!*.env.example
+worker.env
+*.key
+auth.json
+oauth_creds.json

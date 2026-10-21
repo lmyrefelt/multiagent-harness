@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Unattended local-endpoint declaration. The /localllm TUI wizard cannot run",
+    "without a UI, so an in-container pi needs this file.",
+    "Per docs/models.md: compatibility settings must describe VERIFIED differences",
+    "in the endpoint's behaviour. Nothing is enabled optimistically here — no",
+    "compat block, no modelOverrides, no thinking format. Populate those only after",
+    "brief 02 has probed the real server and recorded what it actually does.",
+    "Also: 'Model names are not facts.' The model ids below are placeholders for",
+    "whatever oMLX actually reports on /v1/models. Do not attribute a capability",
+    "to a name without probing it."
+  ],
+  "providers": {
+    "local": {
+      "baseUrl": "http://host.docker.internal:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "$LOCAL_LLM_API_KEY",
+      "models": []
+    }
+  }
+}

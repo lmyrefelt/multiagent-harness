@@ -1,0 +1,57 @@
+# Dockerfile.claude — Claude Code CLI, as a guarded worker backend.
+#
+# FROM pi-contracts:latest (not a fresh base) specifically to inherit its
+# already-baked-in checks.mjs engine at /opt/contracts/extensions/checks.mjs -
+# scripts/claude-guard-adapter.mjs (the host project, mounted at /repo at
+# runtime, not baked in here) imports that SAME pure evaluation core pi's own
+# contract-guard.ts uses, via Claude Code's own hook protocol (an external
+# process, JSON on stdin/stdout per tool call - code.claude.com/docs/en/hooks,
+# fetched directly, not assumed).
+#
+# UNLIKE Dockerfile.agy: no bind-mount target needs pre-creating here.
+# Claude Code's hook config is passed with `claude --settings <path>`
+# (launch-worker.sh generates that file fresh per launch, same reason
+# guards.json is), pointing at a plain file on the already-mounted /repo
+# volume - nothing is ever bind-mounted onto anything under ~/.claude/
+# itself. That sidesteps BOTH real bugs the Antigravity backend hit in
+# practice (root-owned mount target from an un-pre-created directory; EBUSY
+# from an atomic rename landing on a single-file mount) by construction,
+# not by being more careful about docker: Claude Code creates and owns
+# ~/.claude/ itself, as the `node` user, with no docker-created parent
+# standing in the way.
+#
+# --dangerously-skip-permissions is used directly (unlike the Antigravity
+# backend's permissions.json workaround) because PreToolUse hooks are
+# CONFIRMED to keep firing under it (code.claude.com/docs/en/hooks: "The
+# --dangerously-skip-permissions flag bypasses the permission system but
+# does not disable hooks") - the guard is still the one actually enforcing
+# anything; this flag only removes the now-redundant interactive prompts.
+#
+#   docker build -f Dockerfile.claude -t harness-claude:latest .   (context: the host project)
+FROM pi-contracts:latest
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# MEASURED (2026-10-10, same gap found on the codex backend's real launch): a
+# worker's test command touching apps/web runs `corepack pnpm --filter
+# harness-web test ...` (the repo's own packageManager field pins pnpm@10.12.1,
+# read by corepack - package.json), but pi-contracts:latest doesn't ship
+# corepack enabled. Fixed here too, not just Dockerfile.codex, since every
+# backend shares this base and would hit the identical gap.
+RUN npm install -g corepack@latest && corepack enable
+
+USER node
+# Native installer (same shape as Dockerfile.agy's Antigravity CLI install) -
+# lands in ~/.local/bin via a symlink into ~/.local/share/claude/versions/
+# (confirmed: code.claude.com/docs/en/setup, "Native Install (Recommended)").
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/home/node/.local/bin:${PATH}"
+
+WORKDIR /workspace
+# Forwards trailing CMD args into the inner `claude` invocation ($@) - same
+# pattern as Dockerfile.agy, for the same reason (a fixed -c string could
+# never forward the seed message, --settings, or --dangerously-skip-permissions).
+ENTRYPOINT ["/bin/bash", "--login", "-c", "claude \"$@\"", "--"]

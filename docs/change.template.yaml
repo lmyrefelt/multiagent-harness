@@ -1,0 +1,168 @@
+# =============================================================================
+# change.template.yaml — copy to docs/changes/CHANGE-NNNN-<slug>/change.yaml
+#
+# This is the machine-readable half of a change; specification.md is the human
+# half. change.yaml is authoritative for anything tooling reads — above all
+# `owned_paths`, which is enforced (PI blocks writes at tool_call; the
+# pre-commit hook blocks commits outside it). If the two halves disagree,
+# change.yaml wins and specification.md is the bug.
+#
+# Field reference and the rules behind each field: docs/changes/README.md
+# How to run a change end to end:                   docs/changes/HOW-TO-ADD-A-FEATURE.md
+# =============================================================================
+
+id: CHANGE-NNNN
+title: <one line>
+type: feature              # feature | fix | refactor | chore
+
+status: draft              # draft | specified | approved | in_progress | review |
+                           # complete | blocked | rejected
+                           # ONE LINE. State + who/when set it. Nothing else.
+                           # Three things do NOT belong in this comment, because
+                           # every future reader of this change re-reads whatever
+                           # is here, every time, to answer "what's true right now" -
+                           # not "how did we get here":
+                           #   - fine-grained progress -> `checkpoints` below
+                           #   - decision/amendment history -> `history` below
+                           #   - forward sequencing ("X unblocks after this merges")
+                           #     -> do not write it at all; it is DERIVABLE from the
+                           #     OTHER change's own `depends_on` and goes stale the
+                           #     moment it isn't (this change has no way to know if
+                           #     the dependent change's boundary later changed).
+                           # Bad (real, measured - see README.md "Status vs checkpoints"):
+                           #   status: complete  # integrator pi 2026-10-09: review panel
+                           #     #3 max LOW; evidence on fresh PostgreSQL 16.4 at d98b31c2...
+                           #     [8 more lines of decision history and sequencing notes]
+                           # Good: status: complete  # integrator pi, 2026-10-09
+
+# One line per decision that changed this change's shape - the scope, the boundary,
+# an amendment, who made the call and when. NOT a narrative: "<date> <role>: <one
+# fact>". This is what `status`'s comment was being used for in practice; it has its
+# own field now so status can go back to being one line. Newest last. Append-only -
+# never rewrite an old entry, even to correct it (a correction is a new entry).
+history: []                # - "2026-10-08 owner: Q7-Q9 decided; Q8 changes retention to 180d"
+
+request: |-
+  <2-6 sentences: the why. What the user needs, and the boundary of the ask.
+   State what this change is a boundary AROUND, and what it must NOT become.>
+
+base_branch: main
+branch: null               # feature/CHANGE-NNNN-<slug> once work starts.
+                           # The pre-commit boundary hook keys off this name.
+worktree: null             # workspace/worktrees/CHANGE-NNNN, if you use one
+
+# CHANGE ids that must merge before this one. MUST stay ACYCLIC. If this change and
+# another would depend on each other, do NOT list them mutually — extract the shared
+# piece into its own change and have both depend on THAT (see COORDINATION.md
+# "breaking cycles"). check-change-overlap.mjs flags any cycle across active changes.
+depends_on: []
+
+# --- traceability ----------------------------------------------------------
+# Requirement ids are LOCAL to this change: REQ-<NNNN>-<seq>. Define each one in
+# specification.md as a row:
+#     | REQ-NNNN-001 | The system SHALL ... | <trace: spec section, or Q#> |
+# Every REQ must trace to a spec reference (docs/specs/*), an existing spec id
+# (CASE-nn, EVID-nn, CAMP-nn), or a resolved open_question below. If you cannot
+# name the requirement, the change is not understood yet — stop and resolve that.
+requirements:
+  - REQ-NNNN-001
+
+# Per-requirement state — the WORKER updates this as it works, so a resumed or second
+# worker (and the integrator) can see exactly where it stands without re-deriving it.
+# One key per requirement above. Values: pending | red | green.
+progress:
+  REQ-NNNN-001: pending
+
+spec_refs:                 # spec sections + existing code this change reads
+  - docs/specs/NN-<area>.md
+  - apps/api/src/harness/<path>
+
+affected_modules:          # what this change creates or changes; mark NEW / EXTEND
+  - "harness/<path> # NEW"
+potentially_affected:      # touched indirectly, or deliberately NOT touched — name them
+  - "harness/<path> # untouched"
+
+# --- the boundary (the ONLY mechanically enforced field) -------------------
+# Real repo paths this change may write. No <placeholders>: a boundary you
+# cannot name is not a boundary. Fill from Phase 0 discovery before implementing.
+owned_paths: []            # e.g. "apps/api/src/harness/war_room/**"
+                           #      "apps/api/tests/war_room/**"
+forbidden_paths:           # explicitly out of bounds (for the reader; not separately
+                           # enforced — anything not in owned_paths is already blocked)
+  - "**/*.test.py"         # no test may be weakened or deleted (for Python changes)
+  # NOTE for web changes: do NOT use a blanket "**/*.test.tsx" if owned_paths includes a test file
+  # (compile-change-guards treats forbidden_paths as an independent blocker, which would block your own RED test).
+  # Name the specific existing tests to protect instead.
+
+# --- tests -----------------------------------------------------------------
+tests:
+  command: null            # how THIS change's tests run. Required before implementation.
+                           # e.g. "uv run --project apps/api pytest apps/api/tests/war_room -q"
+  red_commit_required: true
+  zero_skip_required: false   # set true only if a REQ/T requires a full-regression run with
+                               # ZERO failures/errors/skips (not just exit 0) - `verify-change.mjs
+                               # --run` then fails a run that reports any skip at all. Leave false
+                               # for ordinary changes; plenty of legitimate runs skip something
+                               # (a platform-gated test, a service-dependent suite) without that
+                               # meaning anything is wrong.
+  features: []             # docs/changes/CHANGE-NNNN-<slug>/features/*.feature
+  scenario_count: 0
+  cases: []                # [{ id: T1, desc: "...", level: unit }]  level: unit|integration|e2e
+
+# --- explicit refusals (the cheapest, most effective scope control) --------
+non_goals:
+  - <a thing a reasonable agent would "helpfully" do that it must NOT>
+
+# --- risk (a reviewer is mandatory at tier high or critical) ---------------
+risk:
+  tier: low                # low | medium | high | critical
+  touches_authorization: false
+  touches_tenancy: false
+  touches_contracts: false
+  touches_migrations: false
+  reviewer_required: false
+  rationale: ""
+
+# --- questions that must be answered before implementation -----------------
+# BLOCKED is a valid, expected state: ask, do not guess.
+open_questions:
+  - id: Q1
+    text: <the question>
+    answer: null           # fill when resolved
+    blocking: true
+    resolved: false
+
+# --- the 13-step progress tracker (the agent advances these) ---------------
+# pending | in_progress | complete
+checkpoints:
+  discovery: pending
+  impact_analysis: pending
+  specification: pending
+  gherkin: pending
+  test_plan: pending
+  red: pending
+  implementation: pending
+  green: pending
+  regression: pending
+  review: pending
+
+# --- handover (REQUIRED once status is `review` or `complete`) -------------
+# The one place the NEXT role reads first, instead of re-deriving the whole
+# change from prose. verify-change.mjs enforces this mechanically:
+#   - present, with from/to/at/summary all non-empty
+#   - `at` is the EXACT current tip of `branch` - if more commits land after
+#     writing this, update `at` (and the rest) or it is stale by definition
+#   - every `verified` entry has a "claim — how" shape (a claim with no
+#     evidence behind it is not evidence)
+# Keep every field ONE LINE: this is read by a script, not folded by a human
+# (the folded-`>-` bug already cost real time elsewhere in this project).
+handover:
+  from: null              # draft|planner|worker|integrator - whoever is writing this
+  to: null                # worker|integrator|reviewer - who should act on it next
+  at: null                # short or full sha - must equal the branch's current tip
+  summary: null           # one line: what's done, what's explicitly NOT done
+  verified:               # each entry: "claim — how" (a run, a commit, a command)
+    - null
+  must_do_next:           # structured, not buried in paragraph 10.2 of a markdown file
+    - null
+  open_risk: null         # one line: the single biggest thing that could be wrong, if any

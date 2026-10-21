@@ -1,0 +1,58 @@
+# Dockerfile.agy — Antigravity CLI, as a guarded integrator backend.
+#
+# FROM pi-contracts:latest (not a fresh base) specifically to inherit its
+# already-baked-in checks.mjs engine at /opt/contracts/extensions/checks.mjs -
+# scripts/antigravity-guard-adapter.mjs (the host project, mounted at /repo at
+# runtime, not baked in here) imports that SAME pure evaluation core pi's own
+# contract-guard.ts uses, via a different protocol (Antigravity's hook system
+# is external-process JSON on stdin/stdout, not an in-process extension -
+# antigravity.google/docs/hooks/, verified directly, not from a summary).
+# integrator_merge_gate is not reimplemented for this backend, only its
+# protocol wrapper differs.
+#
+# hooks.json is bind-mounted at launch (scripts/launch-integrator.sh
+# generates it fresh per launch, same reason guards.json is: it names an
+# absolute, launch-specific path, not something to bake in at build time).
+#
+#   docker build -f Dockerfile.agy -t harness-agy:latest .    (context: the host project)
+FROM pi-contracts:latest
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# MEASURED (2026-10-10, same gap found on the codex backend's real launch): a
+# worker's test command touching apps/web runs `corepack pnpm --filter
+# harness-web test ...` (the repo's own packageManager field pins pnpm@10.12.1,
+# read by corepack - package.json), but pi-contracts:latest doesn't ship
+# corepack enabled. Fixed here too, not just Dockerfile.codex, since every
+# backend shares this base and would hit the identical gap.
+RUN npm install -g corepack@latest && corepack enable
+
+USER node
+# Installs to $HOME/.local/bin for whichever user runs this - pi-contracts:latest
+# sets HOME=/home/node and USER node, so this lands there, not /home/developer
+# (the original standalone Dockerfile.agy's assumption, no longer true once
+# layered on this base).
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+ENV PATH="/home/node/.local/bin:${PATH}"
+
+# hooks.json's mount target - created ahead of time so the bind-mount has
+# somewhere to land (docker will create it as root-owned otherwise).
+RUN mkdir -p /home/node/.gemini/config
+
+# settings.json's mount target (the worker backend's permissions preset,
+# launch-worker.sh) - same gotcha as config above, caught live: without this,
+# docker auto-creates the missing parent as root when the bind-mount lands,
+# and the node user - who actually runs agy - can't write ITS OWN files
+# (log/, crashes/, installation_id) under a root-owned antigravity-cli/ dir.
+RUN mkdir -p /home/node/.gemini/antigravity-cli
+
+WORKDIR /workspace
+# Forwards trailing CMD args into the inner `agy` invocation ($@), unused
+# today (launch-integrator.sh does not pass any for this backend - the seed
+# prompt mechanism is pi-CLI-specific and unverified for Antigravity - see
+# that script's header) but left wired for when it is verified, rather than
+# the original fixed `-c "agy"` string that could never forward anything.
+ENTRYPOINT ["/bin/bash", "--login", "-c", "agy \"$@\"", "--"]

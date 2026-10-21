@@ -1,0 +1,29 @@
+# Dockerfile.pi-planner — pi-contracts:latest + pi-subagents, for the
+# planner role (the host project's launch-planner.sh).
+#
+# Kept SEPARATE from Dockerfile.pi-contracts (the worker's image), same
+# reasoning as Dockerfile.pi-integrator: pi-subagents' BACKGROUND/detached-
+# runner children are an unverified tool_call-routing path - unconfirmed
+# whether that detached process inherits --extension/CONTRACT_GUARDS, so a
+# background child could in principle bypass contract-guard entirely. That
+# risk matters far more for a worker (owned_paths is the only fence standing
+# between it and the rest of the repo) than for the planner, which is
+# already docs-only fenced to docs/changes/**, docs/decisions/** regardless
+# of which agent or sub-agent makes the write - a bypassed background child
+# still can't reach application code through this guard. Prefer FOREGROUND
+# sub-agent delegation until the background case is verified empirically
+# (see docs/changes/COORDINATION.md "Grounding a weak mission").
+#
+# Used for the research phase of grounding a weak mission: one sub-agent per
+# candidate direction/mission, researched in parallel, each producing its own
+# cited note under docs/changes/_research/ before any boundary gets drafted.
+#
+#   ./build.sh planner   (or: ./build.sh ensure all)
+# The base is passed in by build.sh (--build-arg BASE_IMAGE=<slug>-pi-contracts:latest),
+# derived from contracts/.harness-slug - never hard-code a namespaced name here.
+ARG BASE_IMAGE=pi-contracts:latest
+FROM ${BASE_IMAGE}
+
+USER node
+RUN pi install npm:pi-subagents
+RUN pi install npm:pi-hashline-edit-pro

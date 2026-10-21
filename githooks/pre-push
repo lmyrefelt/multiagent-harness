@@ -1,0 +1,25 @@
+#!/bin/sh
+# -----------------------------------------------------------------------------
+# pre-push — the harness-independent evidence gate.
+#
+# Before a feature/CHANGE-NNNN branch leaves your machine, prove it was developed
+# test-first (a test commit before the first implementation commit) and that its
+# change.yaml names a real tests.command. On any other branch it does nothing.
+#
+# This is the net for non-PI agents. PI agents are additionally held at
+# agent_before_settle by the runtime evidence_captured guard. No CI required.
+#
+# Fast by default (git-history only). To also run the tests and require GREEN:
+#     node scripts/verify-change.mjs CHANGE-NNNN --run
+#
+# To bypass in a genuine emergency: git push --no-verify
+# -----------------------------------------------------------------------------
+set -e
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: node not found; skipping evidence check." >&2
+  exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+exec node "$ROOT/scripts/verify-change.mjs"

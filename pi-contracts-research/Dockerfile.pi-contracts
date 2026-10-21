@@ -1,0 +1,165 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# pi-contracts — a bare-bone pi.dev image that can actually hold an agent to
+# a written contract.
+#
+# Built on Dockerfile.pi.barebone. The only additions are the ones this
+# research justified, and each carries its cost in a comment.
+#
+# THE ONE NON-NEGOTIABLE PROPERTY: the guard layer is verified at BUILD TIME.
+# `node verify-guards.mjs` runs in the build; a non-zero exit fails the image.
+# A container whose mechanical layer is broken must not be constructible,
+# because the failure mode is silent — a broken guard looks exactly like a
+# model that never misbehaved.
+#
+# STATUS: build context is THIS directory (pi-contracts-research/). All COPY
+# sources are therefore relative to it, and the contract system lives under
+# prototype/. Build with:
+#     docker build -f Dockerfile.pi-contracts -t pi-contracts:latest .
+# The build-time gate below was executed directly (65/65) but the image itself
+# had not been built when this was written.
+# =============================================================================
+
+FROM node:24-bookworm-slim
+
+ARG PI_VERSION=latest
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git jq ripgrep \
+ && rm -rf /var/lib/apt/lists/*
+
+# Python + uv so the worker can actually RUN the project's test suite
+# (`uv run pytest`). Without these the image has no Python toolchain, so a
+# worker can only run tests if the mounted repo happens to provide them — which
+# is why test runs were flaky and the completion gate kept failing to confirm a
+# pass. Install uv to a SYSTEM path (/usr/local/bin) so the `node` user can use
+# it; installing to root's ~/.local/bin leaves it unreadable after `USER node`.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+      | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh \
+ && uv --version
+
+RUN npm install -g --ignore-scripts \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+ && npm cache clean --force
+
+ENV HOME=/home/node
+# Where oMLX / llama.cpp / Ollama are reachable. Defaults are overridable at
+# `docker run` time. The M4 Pro is the primary worker host; the M1 Pro serves
+# a smaller model. Both are plain HTTP, so one variable pattern covers both.
+#
+# NOTE: no API-key ENV is declared here on purpose. hadolint's
+# SecretsUsedInArgOrEnv is right to complain, and an ENV also bakes the value
+# into every image layer. Pass credentials at run time instead:
+#     docker run --env-file .env -e LOCAL_LLM_BASE_URL=http://host:8000/v1 ...
+# `models.json` interpolates $LOCAL_LLM_API_KEY at request time (docs/models.md).
+ENV LOCAL_LLM_BASE_URL=http://host.docker.internal:8001/v1 \
+    CONTRACT_ROOT=/opt/contracts
+
+RUN mkdir -p /workspace "$CONTRACT_ROOT" /home/node/.pi/agent \
+ && chown -R node:node /workspace "$CONTRACT_ROOT" /home/node/.pi
+
+USER node
+
+# --- pi packages -----------------------------------------------------------
+# pi-localllm-provider already detects oMLX, llama.cpp, Ollama, LM Studio and
+# vLLM, and PROBES the server for context window, quantisation and tool-calling
+# support rather than trusting a config file. That satisfies the "a model name
+# is not a fact" rule, so we do not add a second oMLX extension: three
+# competing ones exist on the pi package catalogue and stacking them risks two
+# providers claiming the same endpoint.
+# COST: /localllm is an interactive TUI wizard, so an unattended container must
+# have its local endpoint declared in models.json instead (see below).
+RUN pi install npm:pi-localllm-provider \
+ && pi install npm:pi-web-access \
+ && pi install npm:@narumitw/pi-btw \
+ && pi install npm:pi-opencode-free \
+ && pi install npm:pi-tool-repair \
+ && pi install npm:pi-lens \
+ && pi install npm:pi-usage-ledger \
+ && pi install npm:pi-prefix-cache-compaction \
+ && pi install npm:pi-cache-optimizer
+
+# --- the contract system ---------------------------------------------------
+# Paths are relative to the BUILD CONTEXT, not to the Dockerfile's own
+# directory. These live under prototype/.
+COPY --chown=node:node prototype/contracts/          "$CONTRACT_ROOT/contracts/"
+COPY --chown=node:node prototype/compile.mjs         "$CONTRACT_ROOT/compile.mjs"
+COPY --chown=node:node prototype/verify-guards.mjs   "$CONTRACT_ROOT/verify-guards.mjs"
+COPY --chown=node:node prototype/extensions/         "$CONTRACT_ROOT/extensions/"
+
+# --- eval tooling ----------------------------------------------------------
+# Shipped in the image so the probe and the harness can be run without a bind
+# mount. These measure; they are not part of the enforcement path.
+COPY --chown=node:node prototype/probe-local-models.mjs "$CONTRACT_ROOT/"
+COPY --chown=node:node prototype/make-models-json.mjs "$CONTRACT_ROOT/"
+COPY --chown=node:node prototype/probe-lib.mjs        "$CONTRACT_ROOT/"
+COPY --chown=node:node prototype/run-probes.mjs        "$CONTRACT_ROOT/"
+COPY --chown=node:node prototype/aggregate.mjs         "$CONTRACT_ROOT/"
+COPY --chown=node:node prototype/pc                    "$CONTRACT_ROOT/pc"
+COPY --chown=node:node prototype/project.yaml         "$CONTRACT_ROOT/project.yaml"
+COPY --chown=node:node prototype/project-manifest.mjs "$CONTRACT_ROOT/project-manifest.mjs"
+
+# --- BUILD-TIME GATE -------------------------------------------------------
+# Three things must be true before this image exists:
+#   1. the contract compiles with no unoperationalised clause and no
+#      contradictory overlapping check surface
+#   2. every guard is exercised by a deterministic self-test (positive+negative)
+#   3. the coverage matrix, the engine registry and the test suite agree
+#
+# COST: every rule change must keep its tests green, so editing a contract now
+# requires touching a test. That is the intended friction — it is the same
+# discipline as a test suite for product code.
+#
+# The suite is HERMETIC: it builds its own fixtures in a temp dir and reads
+# nothing outside $CONTRACT_ROOT. An earlier version pointed at ../../sandbox,
+# a research artifact not copied into the image, so the gate failed on a
+# correct image. Tests that depend on the surrounding workspace are accidents.
+RUN cd "$CONTRACT_ROOT" \
+ && node compile.mjs \
+ && node compile.mjs --check \
+ && node verify-guards.mjs \
+ && "$CONTRACT_ROOT/pc" ls | grep -q "ok    aggregate.mjs" \
+ && node -e "import('$CONTRACT_ROOT/project-manifest.mjs').then(m=>{const x=m.loadManifest('$CONTRACT_ROOT/project.yaml');if(!x)process.exit(1);const b=m.deriveBoundary(x);if(b.warnings.length)process.exit(1)})"
+
+# Generate the projections at build time so the image ships a compiled contract
+# rather than a contract that must be compiled by hand at run time.
+RUN cd "$CONTRACT_ROOT" && node compile.mjs && test -f generated/AGENTS.md \
+ && test -f generated/guards.json && test -f generated/coverage.json
+
+# --- local model endpoint --------------------------------------------------
+# Declared, not discovered. models.json is the unattended path; the provider
+# extension's TUI wizard is not available without a UI.
+# NOTE: `modelOverrides` must describe VERIFIED differences in the endpoint's
+# behaviour. Per docs/models.md: "Compatibility settings should describe verified
+# differences ... Do not enable them based only on an endpoint advertising OpenAI
+# or Anthropic compatibility." Nothing is enabled optimistically here.
+COPY --chown=node:node models.json /home/node/.pi/agent/models.json
+
+# --- worker defaults -------------------------------------------------------
+# A weak model given a wide tool surface fails in more ways than one given a
+# narrow one. `defaultTools` restricts BUILT-IN tools only — an empty array
+# still leaves extension and SDK tools live (VERIFIED, docs/settings.md), so it
+# cannot be used alone to produce a hermetic worker. The narrow set below is a
+# default, not a boundary; the boundary is the guard.
+#
+COPY --chown=node:node settings.defaults.json /tmp/settings.defaults.json
+COPY --chown=node:node prototype/image-setup.mjs       "$CONTRACT_ROOT/image-setup.mjs"
+
+# MERGE, THEN VERIFY. image-setup.mjs merges the worker defaults into
+# <agent-dir>/settings.json without clobbering the `packages` array that
+# `pi install` wrote, then asserts every extension is both registered and
+# present in node_modules. A plain `COPY settings.json` silently deleted the
+# registration: extensions on disk, invisible to pi. That shipped in v1.
+#
+# The logic lives in a file, not `RUN node -e "..."`, because the Dockerfile
+# parser does not understand shell quoting across lines — a multi-line quoted
+# block is parsed as further Dockerfile instructions.
+RUN node "$CONTRACT_ROOT/image-setup.mjs" && chmod +x "$CONTRACT_ROOT/pc"
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]
+CMD ["--help"]
