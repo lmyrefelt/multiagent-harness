@@ -14,6 +14,10 @@
   "mode": "dry-run",
   "report_cmd": "node /repo/scripts/handoff.mjs report",
   "new_cmd": "node /repo/scripts/handoff.mjs new",
+  "round_cap": {
+    "fresh_restarts": 2,
+    "_comment": "At the impl round limit: the worker writes a handover (docs/changes/<change>/worker-handover-cap-N.md), its session ends and a fresh worker continues from it + the integrator's latest review + a harness brief, with rounds reset. After fresh_restarts such restarts the owner decides."
+  },
   "max_rounds": {
     "plan": 5,
     "impl": 5

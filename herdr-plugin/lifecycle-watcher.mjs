@@ -273,6 +273,25 @@ export function planDispatch({ change, entries, cstate = {}, panes = [], pipelin
     const isNewRound = !prevReport || roundMark[route.loop] !== prevReport.id;
     const max = pipeline.max_rounds?.[route.loop] ?? 5;
     if (isNewRound && rounds[route.loop] >= max) {
+      // owner 2026-10-22: at the impl round limit the worker writes a handover, its session ends and a
+      // FRESH worker continues from that handover + the integrator's latest review (fresh_restarts times,
+      // then the owner decides). The restart itself happens in reconcile (capHandover).
+      const restarts = cstate.capRestarts ?? 0;
+      const maxRestarts = pipeline.round_cap?.fresh_restarts ?? 2;
+      if (route.loop === "impl" && route.to === "worker" && restarts < maxRestarts) {
+        const dir = last.file ? last.file.replace(/\/[^/]+$/, "") : null;
+        const hfile = dir ? `${dir}/worker-handover-cap-${restarts + 1}.md` : `.pi-session/handover-${change}-cap-${restarts + 1}.md`;
+        const base = fillTemplate(route.prompt, { ...vars, round: "1 (fresh worker)" }).replace(/[^\x20-\x7E]/g, " ");
+        const cap = { entry: last.id, since: now, file: hfile, review: last.file ?? null, text: base, restart: restarts + 1, asked: false };
+        const wp = pickTargetPane(panes, "worker", change);
+        if (wp && READY.has(wp.agent_status)) {
+          const ask = `[handoff] ${change}: the round limit is reached (${rounds.impl} implementation rounds without the integrator accepting). Do NOT continue fixing. Write a handover for the worker who takes over to /repo/${hfile}: (1) what is done and committed, (2) every open finding from the integrator's latest review${reportPath ? ` (${reportPath})` : ""} by ID with its status, (3) what you tried that did not work and why, (4) what you would do next. Commit nothing else. When the file is written, stop - your session ends and a fresh worker continues from it.`;
+          return { action: "prompt", capAsk: true, entry: last, pane: wp.pane_id, role: "worker", text: ask, stateUpdate: done({ awaiting: null, capHandover: { ...cap, asked: true } }) };
+        }
+        if (wp) return { action: "defer", entry: last, reason: "round limit: waiting for the worker to settle before asking for its handover" };
+        // no worker pane: nothing to ask - reconcile starts the fresh worker from the review + harness brief
+        return { action: "cap-handover", entry: last, stateUpdate: done({ awaiting: null, capHandover: cap }) };
+      }
       return { action: "notify", entry: last, message: `${change}: ${rounds[route.loop]} ${route.loop} rounds without agreement (max ${max}) - needs you. Last: ${last.role} ${last.verdict}${vars.note_hint}. To let it continue: node herdr-plugin/lifecycle-watcher.mjs --retry ${change}`, stateUpdate: done({ awaiting: null, capped: last.id }) };
     }
     if (isNewRound) { rounds[route.loop] += 1; if (prevReport) roundMark = { ...roundMark, [route.loop]: prevReport.id }; }
@@ -905,11 +924,34 @@ export function reconcile(repoRoot, { echo = false } = {}) {
         const sv = superviseStep({ repoRoot, change, entries, cstate, panes, byChange, yamlOf, depsOn, wd, watchNow, say, notifyHuman });
         if (sv === "skip") { state.changes[change] = cstate; continue; }
       }
-      const d = planDispatch({ change, entries, cstate, panes, pipeline, now: new Date().toISOString(), reportCounts: gatherReportCounts(trees, change) });
+      let d = null;
+      const ch = cstate.capHandover;
+      if (live && ch) {
+        // round-limit handover (planDispatch): restart with a fresh worker once the handover is written,
+        // the worker pane is gone/idle after 10 min, or 25 min passed (the harness brief covers the rest)
+        const mins = (Date.now() - Date.parse(ch.since)) / 60000;
+        const written = ch.file && existsSync(join(repoRoot, ch.file));
+        const wps = panes.filter((p) => p.role === "worker" && p.change === change);
+        const busy = wps.some((p) => p.agent_status === "working");
+        if (written ? !busy : (mins >= 25 || (!busy && mins >= 10) || !wps.length)) {
+          const last = entries[entries.length - 1];
+          const lc = change.toLowerCase();
+          let wt = null; try { wt = readdirSync(join(repoRoot, ".worktrees")).filter((x) => x === `harness-${lc}` || x.startsWith(`harness-${lc}-`)).map((x) => join(repoRoot, ".worktrees", x))[0] ?? null; } catch { /* none */ }
+          let briefFile = null;
+          try { briefFile = writeHandoffBrief(repoRoot, { change, agent: "previous worker session", why: `round limit reached - fresh worker #${ch.restart}`, worktree: wt }).file; } catch (e) { say(`CAP-BRIEF-ERROR ${change}: ${e.message}`); }
+          const retired = wps.length ? retireWorker(repoRoot, change, wps.map((p) => p.pane_id), { forget: false }) : "no worker pane";
+          const reads = [ch.review ? `the integrator's latest review /repo/${ch.review}` : null, written ? `the previous worker's handover /repo/${ch.file}` : null, briefFile ? `the harness brief /repo/${briefFile}` : null].filter(Boolean);
+          const text = `[handoff] ${change}: you take over from a previous worker session that reached the round limit. Start by reading ${reads.join(", then ")}. ${ch.text}`;
+          say(`CAP-RESTART ${change}: fresh worker #${ch.restart} (${written ? "handover written" : `no handover after ${Math.round(mins)} min`}); ${retired}`);
+          notifyHuman(repoRoot, `${change}: round limit reached - ${written ? "the worker wrote a handover" : "no handover from the worker"}; a fresh worker takes over (restart ${ch.restart} of ${pipeline.round_cap?.fresh_restarts ?? 2}).${written ? ` Handover: ${ch.file}` : ""}`, "Harness");
+          d = { action: "launch", entry: last, role: "worker", text, stateUpdate: { capHandover: null, capRestarts: ch.restart, rounds: { ...(cstate.rounds ?? {}), impl: 0 }, awaiting: { role: "worker", change, since: new Date().toISOString(), entry: last.id, pane: null, reminded: false, reminderScheduled: false, escalated: false } } };
+        } else continue;
+      }
+      d ??= planDispatch({ change, entries, cstate, panes, pipeline, now: new Date().toISOString(), reportCounts: gatherReportCounts(trees, change) });
       const tag = d.entry ? `${change} ${d.entry.role}:${d.entry.verdict}` : change;
       if (d.action === "none") continue;
       // fresh worker session or continue the old one (harness-supervisor.mjs freshOrContinue)
-      if (live && d.action === "prompt" && d.role === "worker" && pipeline.fresh_sessions?.enabled !== false) {
+      if (live && d.action === "prompt" && d.role === "worker" && !d.capAsk && pipeline.fresh_sessions?.enabled !== false) {
         try {
           const lc = change.toLowerCase();
           const wt = readdirSync(join(repoRoot, ".worktrees")).filter((x) => x === `harness-${lc}` || x.startsWith(`harness-${lc}-`)).map((x) => join(repoRoot, ".worktrees", x))[0] ?? null;
