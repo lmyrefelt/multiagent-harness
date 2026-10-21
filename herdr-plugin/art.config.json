@@ -1,0 +1,25 @@
+{
+ "_note": "art-gen.mjs settings (owner, 2026-10-21). Budgets are USD per calendar month; the free tier has none. Check prices at openai.com/api/pricing and ai.google.dev/pricing and edit rates when they change. Owner 2026-10-21: the AI Studio project has billing (prepaid credit), so there is no free tier - drafts are paid Gemini calls under the gemini-paid cap.",
+ "monthly_budget_usd": {
+  "openai": 20,
+  "gemini-paid": 10
+ },
+ "tiers": {
+  "draft": [
+   "gemini-paid"
+  ],
+  "final": [
+   "openai",
+   "gemini-paid"
+  ]
+ },
+ "openai": {
+  "model": "gpt-image-1",
+  "quality": "medium",
+  "size": "1536x1024",
+  "background": "transparent"
+ },
+ "gemini": {
+  "model": "gemini-2.5-flash-image"
+ }
+}

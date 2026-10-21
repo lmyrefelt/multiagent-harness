@@ -39,7 +39,8 @@
     "pi",
     "codex",
     "claude",
-    "antigravity"
+    "antigravity",
+    "jules"
   ],
   "routes": {
     "plan-requested": {

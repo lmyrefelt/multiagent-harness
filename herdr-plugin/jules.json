@@ -1,0 +1,8 @@
+{
+ "_note": "Jules worker backend (scripts/jules-worker.mjs). source: the repo as Jules names it (run `node scripts/jules-worker.mjs sources` after installing the Jules GitHub app on the repo). Until it is set, the router does not pick Jules.",
+ "source": null,
+ "remote": "origin",
+ "daily_limit": 100,
+ "require_plan_approval": false,
+ "poll_minutes": 3
+}

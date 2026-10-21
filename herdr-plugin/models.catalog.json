@@ -18,7 +18,9 @@
     "visual_min_design: Open Design Arena score that makes a model visual-capable without visual:true. change_tokens: rough tokens per change size, checked against the plan's allowance (Real API Pricing). pricing_plans: which plan each provider bills through.",
     "backends: agent tools that can run a model, tried in backend_priority order (opencode before pi); backend_weight adds to the cost of picking that backend (negative = preferred).",
     "tier_for: {\"<risk>:<size>\": tier} - the model counts as that tier for that kind of change only. visual_fallback_penalty (default 12): for visual work, a model that is not visual:true (it only qualifies by design score) comes after the owner's visual models.",
-    "min_tier_by_risk: sets the minimum tier per risk and size (owner: low/medium-risk L starts at tier 2). free_first: for these risks and sizes, without visuals and before any struggle, free/local models get `bonus` points off so they lead; 2 change requests or failed qualifications move the change up a tier and switch it off. wait_for_reset_hours: when nothing is usable at the needed tier, the strongest OTHER agent takes it (never below tier 3 for high risk / visual); only when no agent at all can, wait for a quota that resets within this many hours."
+    "min_tier_by_risk: sets the minimum tier per risk and size (owner: low/medium-risk L starts at tier 2). free_first: for these risks and sizes, without visuals and before any struggle, free/local models get `bonus` points off so they lead; 2 change requests or failed qualifications move the change up a tier and switch it off. wait_for_reset_hours: when nothing is usable at the needed tier, the strongest OTHER agent takes it (never below tier 3 for high risk / visual); only when no agent at all can, wait for a quota that resets within this many hours.",
+    "openai-free/*: OpenAI API models on the data-sharing free daily allowance (owner, 2026-10-21: 250k tokens/day big models, 2.5M mini); quotas openai_free_big/mini from the admin usage API. Prompts and code are shared with OpenAI. Above the allowance the same key bills the prepaid credit, so the floor keeps them off near the limit.",
+    "jules/*: Google Jules (Gemini AI Pro, ~100 sessions/day) - works in Google's cloud on the GitHub repo and returns a PR, which scripts/jules-worker.mjs fast-forwards into the change branch for the integrator. No harness contract guards run inside Jules; the integrator's review and the merge gate are the check. Not visual."
   ],
   "quota_floor_pct": 15,
   "breaker_threshold": 6,
@@ -337,6 +339,46 @@
       "score_name": "claude-opus-5.5",
       "enabled": false,
       "note": "Claude Pro through pi's own Anthropic login. ~60x cheaper per token than Opus via OpenRouter. Enable after /login (Anthropic)."
+    },
+    {
+      "id": "openai-free/gpt-5.4",
+      "backend": "pi",
+      "pi_model": "openai/gpt-5.4",
+      "tier": 3,
+      "cost": "free",
+      "quotas": [
+        "openai_free_big"
+      ],
+      "health_match": "openai",
+      "context_window": 400000,
+      "note": "data-sharing free allowance (250k tokens/day) - about one small change a day",
+      "score_name": "gpt-5.4"
+    },
+    {
+      "id": "openai-free/gpt-5.4-mini",
+      "backend": "pi",
+      "pi_model": "openai/gpt-5.4-mini",
+      "tier": 2,
+      "cost": "free",
+      "quotas": [
+        "openai_free_mini"
+      ],
+      "health_match": "openai",
+      "context_window": 400000,
+      "note": "data-sharing free allowance (2.5M tokens/day)",
+      "score_name": "gpt-5.4-mini"
+    },
+    {
+      "id": "jules/gemini-3-pro",
+      "backend": "jules",
+      "tier": 3,
+      "cost": "sub",
+      "quotas": [
+        "jules_daily"
+      ],
+      "preference": 0.5,
+      "note": "Jules (Gemini AI Pro): cloud worker via GitHub PR; picked only when herdr-plugin/jules.json has a source",
+      "context_window": 1000000
     }
   ],
   "change_hours": {

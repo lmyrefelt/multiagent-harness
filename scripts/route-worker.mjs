@@ -38,6 +38,8 @@ import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { getSecret } from "./secrets.mjs";
+import { julesUsage, julesReady } from "./jules-worker.mjs";
 import { priceFor, scoresFor, loadPricing, DEFAULT_PLANS, pricingIsOld, refreshPricing } from "./plan-pricing.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -422,6 +424,7 @@ const readJson = (p) => { try { return JSON.parse(readFileSync(p, "utf8")); } ca
 
 function openRouterKey() {
 	if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
+	{ const k = getSecret("openrouter"); if (k) return k; }
 	const root = process.env.HARNESS_CONFIG_ROOT || join(homedir(), ".harness", "config");
 	for (const p of [join(root, "pi", ".pi", "agent", "auth.json"), join(homedir(), ".pi", "agent", "auth.json")]) {
 		const a = readJson(p)?.openrouter;
@@ -549,7 +552,8 @@ export function antigravityQuotas(j, t = Date.now()) {
 	const out = {};
 	const map = { "gemini-5h": "gemini_5h", "gemini-weekly": "gemini_weekly", "3p-5h": "agy3p_5h", "3p-weekly": "agy3p_weekly" };
 	for (const b of buckets) {
-		const key = map[b.bucketId];
+		// unknown buckets (e.g. gemini-argon-wtu-weekly) keep their own key instead of being dropped
+		const key = map[b.bucketId] ?? (b.bucketId ? (/^gemini-/.test(b.bucketId) ? "" : "agy_") + String(b.bucketId).replace(/[^a-z0-9]+/gi, "_").toLowerCase() : null);
 		const f = Number(b.remainingFraction);
 		if (!key || !Number.isFinite(f)) continue;
 		let r = b.resetTime ?? null;
@@ -616,11 +620,68 @@ async function antigravityFromLogin(repoRoot = null) {
 	const pr = load.json.cloudaicompanionProject;
 	const project = typeof pr === "string" ? pr : pr?.id ?? pr?.projectId;
 	if (!project) return { error: "no Code Assist project on this account" };
-	await postJson(`${AGY_CLIENT.base}/v1internal:fetchAvailableModels`, token, { project });   // quota is empty without this call
+	const fm = await postJson(`${AGY_CLIENT.base}/v1internal:fetchAvailableModels`, token, { project });   // quota is empty without this call
 	const q = await postJson(`${AGY_CLIENT.base}/v1internal:retrieveUserQuotaSummary`, token, { project });
 	if (!q.json) return { error: `retrieveUserQuotaSummary ${q.error}` };
 	const ids = (q.json?.groups ?? []).flatMap((g) => (g.buckets ?? []).map((b) => `${b.bucketId}=${b.remainingFraction ?? "?"}`));
-	return { quotas: antigravityQuotas(q.json), from: c.from, ids };
+	const mq = antigravityModelQuotas(fm.json);
+	return { quotas: { ...mq.quotas, ...antigravityQuotas(q.json) }, from: c.from, ids, models: mq.names };
+}
+
+/** fetchAvailableModels -> per-model quota (quotaInfo.remainingFraction/resetTime) as agy_model_<name>;
+ *  the Gemini buckets are missing from retrieveUserQuotaSummary on some accounts. Pure. */
+export function antigravityModelQuotas(j, t = Date.now()) {
+	const quotas = {}, names = [];
+	const models = j?.models ?? {};
+	const entries = Array.isArray(models) ? models.map((m) => [m.name ?? m.id ?? m.model, m]) : Object.entries(models);
+	for (const [name, m] of entries) {
+		const qi = m?.quotaInfo;
+		const f = Number(qi?.remainingFraction);
+		if (!name) continue;
+		names.push(`${name}=${Number.isFinite(f) ? f : "?"}`);
+		if (!Number.isFinite(f)) continue;
+		let r = qi.resetTime ?? null;
+		if (r != null) { const n = Number(r); r = Number.isFinite(n) && String(r).trim() !== "" ? (n > 1e12 ? n : n * 1000) : Date.parse(r) || null; }
+		quotas[`agy_model_${String(name).replace(/^models\//, "").replace(/[^a-z0-9]+/gi, "_").toLowerCase()}`] = { t, usedPct: Math.round((1 - f) * 1000) / 10, resetsAt: r, via: "antigravity login" };
+	}
+	return { quotas, names };
+}
+
+// --- OpenAI API (admin key): today's tokens against the data-sharing free allowance, and this month's cost ---
+export const OPENAI_FREE = {
+	big: { limit: 250000, models: ["gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4.1", "gpt-4o", "o1", "o3"] },
+	mini: { limit: 2500000, models: ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5-mini", "gpt-5-nano", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o-mini", "o3-mini", "o4-mini"] },
+};
+/** "gpt-5.4-mini-2026-03-01" -> "mini"; longest listed name that prefixes the model wins. Pure. */
+export function openaiFreeGroup(model) {
+	let best = null, len = 0;
+	for (const [g, { models }] of Object.entries(OPENAI_FREE)) for (const m of models) if ((model === m || String(model).startsWith(m + "-")) && m.length > len) { best = g; len = m.length; }
+	return best;
+}
+/** usage/completions buckets (group_by model) + costs buckets -> quotas. Pure. */
+export function openaiQuotas(usageJson, costsJson, t = Date.now(), monthBudget = null) {
+	const tok = { big: 0, mini: 0 };
+	for (const b of usageJson?.data ?? []) for (const r of b.results ?? []) { const g = openaiFreeGroup(r.model ?? ""); if (g) tok[g] += (r.input_tokens ?? 0) + (r.output_tokens ?? 0); }
+	const d = new Date(t), reset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+	const out = {};
+	for (const g of Object.keys(OPENAI_FREE)) out[`openai_free_${g}`] = { t, used: tok[g], limit: OPENAI_FREE[g].limit, usedPct: Math.round((1000 * tok[g]) / OPENAI_FREE[g].limit) / 10, resetsAt: reset, via: "openai admin" };
+	if (costsJson) {
+		let usd = 0;
+		for (const b of costsJson.data ?? []) for (const r of b.results ?? []) usd += Number(r.amount?.value ?? 0);
+		out.openai_usd_month = { t, spent: Math.round(usd * 100) / 100, limit: monthBudget, usedPct: monthBudget ? Math.round((1000 * usd) / monthBudget) / 10 : null, resetsAt: Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1), via: "openai admin" };
+	}
+	return out;
+}
+async function openaiFromAdmin(repoRoot) {
+	const key = getSecret("openai_metrics");
+	if (!key) return { error: "no admin key (Keychain harness.openai_metrics)" };
+	const now = new Date(), day = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000), month = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000);
+	const h = { headers: { authorization: `Bearer ${key}` } };
+	const u = await fetchJson(`https://api.openai.com/v1/organization/usage/completions?start_time=${day}&bucket_width=1d&group_by=model&limit=1`, h);
+	if (!u.json) return { error: `usage ${u.error}` };
+	const c = await fetchJson(`https://api.openai.com/v1/organization/costs?start_time=${month}&bucket_width=1d&limit=31`, h);
+	let budget = null; try { budget = JSON.parse(readFileSync(join(repoRoot, "herdr-plugin", "art.config.json"), "utf8")).monthly_budget_usd?.openai ?? null; } catch { /* none */ }
+	return { quotas: openaiQuotas(u.json, c.json ?? null, Date.now(), budget), costError: c.json ? null : c.error };
 }
 
 /** Keep the fresher reading per key. */
@@ -731,7 +792,7 @@ export async function refreshUsage(repoRoot, catalog) {
 	} catch (e) { usage.sources.claude = String(e.message); }
 	try {
 		const c = await antigravityFromLogin(repoRoot);
-		if (c.quotas && Object.keys(c.quotas).length) { mergeFresher(usage.quotas, c.quotas); usage.sources.antigravity = `live (Antigravity login, ${c.from})`; usage.sources.antigravity_buckets = (c.ids ?? []).join(" "); }
+		if (c.quotas && Object.keys(c.quotas).length) { mergeFresher(usage.quotas, c.quotas); usage.sources.antigravity = `live (Antigravity login, ${c.from})`; usage.sources.antigravity_buckets = (c.ids ?? []).join(" "); usage.sources.antigravity_models = (c.models ?? []).join(" "); }
 		else usage.sources.antigravity = c.error ?? "no quota buckets in the answer";
 	} catch (e) { usage.sources.antigravity = String(e.message); }
 	try {
@@ -764,6 +825,13 @@ export async function refreshUsage(repoRoot, catalog) {
 		const r = await fetchJson("https://openrouter.ai/api/v1/key", { headers: { authorization: `Bearer ${key}` } });
 		if (r.json?.data) { Object.assign(usage.quotas, openRouterQuotas(r.json.data, now)); usage.sources.openrouter = "ok"; } else usage.sources.openrouter = r.error ?? "unexpected response";
 	} else usage.sources.openrouter = "no key (OPENROUTER_API_KEY or auth.json)";
+	try {
+		const o = await openaiFromAdmin(repoRoot);
+		if (o.quotas) { Object.assign(usage.quotas, o.quotas); usage.sources.openai = o.costError ? `usage ok, costs ${o.costError}` : "ok (admin key)"; } else usage.sources.openai = o.error;
+	} catch (e) { usage.sources.openai = String(e.message); }
+	try { Object.assign(usage.quotas, julesUsage(repoRoot)); usage.sources.jules = julesReady(repoRoot) ? "ok (local session count)" : "not set up (key harness.jules + source in herdr-plugin/jules.json)"; } catch (e) { usage.sources.jules = String(e.message); }
+	// readings no live source refreshed for a day (e.g. Gemini buckets that only came from worker logs) are marked stale
+	for (const v of Object.values(usage.quotas)) if (v && v.t && now - v.t > 24 * 3600e3) v.stale = true;
 	const lr = await fetchJson(`${localBaseUrl(repoRoot)}/models`, { ms: 2500 });
 	usage.local = lr.json ? { up: true, models: (lr.json.data ?? lr.json.models ?? []).map((m) => m.id ?? m.key).filter(Boolean) } : { up: false, error: lr.error };
 	try { usage.projections = appendHistoryAndProject(repoRoot, usage); } catch { usage.projections = {}; }
@@ -895,6 +963,7 @@ export function opencodeGoQuotas(body, now = Date.now()) {
 }
 function opencodeGoKey() {
 	if (process.env.OPENCODE_GO_API_KEY) return process.env.OPENCODE_GO_API_KEY.trim();
+	{ const k = getSecret("opencode"); if (k) return k.trim(); }
 	const root = process.env.HARNESS_CONFIG_ROOT || join(homedir(), ".harness", "config");
 	try { const k = readFileSync(join(root, "opencode-go.key"), "utf8").trim(); if (k) return k; } catch { /* next */ }
 	for (const p of [join(root, "pi", ".pi", "agent", "auth.json"), join(homedir(), ".pi", "agent", "auth.json")]) {
@@ -972,6 +1041,10 @@ export function detectLogins(repoRoot) {
 	const cl = readJson(join(root, "claude", "credentials.json"))?.claudeAiOauth;
 	out.claude = cl?.refreshToken || cl?.accessToken ? null : existsSync(join(root, "claude", "credentials.json")) ? false : null;
 	const cx = readJson(join(root, "codex", "auth.json"));
+	// openai-free/* models run in pi with the Keychain OpenAI key
+	if (out.pi instanceof Set && getSecret("openai")) out.pi.add("openai");
+	// jules: needs its key and a configured GitHub source (herdr-plugin/jules.json)
+	out.jules = julesReady(repoRoot) ? null : false;
 	out.codex = cx?.tokens?.refresh_token || cx?.tokens?.access_token || cx?.OPENAI_API_KEY ? null : existsSync(join(root, "codex", "auth.json")) ? false : null;
 	return out;
 }

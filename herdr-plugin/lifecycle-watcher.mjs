@@ -50,6 +50,8 @@ import { readChangeConfig } from "../scripts/verify-change.mjs";
 import { decideForChange, logDecision, usageIsOld, loadUsage, loadCatalog } from "../scripts/route-worker.mjs";
 import { superviseChange, pendingDeps, yamlReader, syncWorker, triageMarkdown, latestQualifyTail, eventsFor, writeTriage, buildStatus, writeStatus, digestText, digestDue, phaseOf, DEFAULTS as SUPERVISOR_DEFAULTS, detectLimit, backendOfAgent, recordLimit, loadLimits, pickFallbackBackend, capacity, windowResets, capacityMarkdown, waitOrMove, writeHandoffBrief, paceLevel, detectProviderError, providerErrorPersists, integratorUnresponsive, newestSessionLog, freshOrContinue, sessionHealth } from "../scripts/harness-supervisor.mjs";
 import { lastActivity, describeQuiet } from "../scripts/activity-probe.mjs";
+import { notifyRich, appInstalled as notifyAppInstalled } from "../scripts/notify.mjs";
+import { julesActive, loadSessions as julesSessions, loadConfig as julesConfig } from "../scripts/jules-worker.mjs";
 import { sessionMeters, loadMeterCache, saveMeterCache, contextWindowFrom, paneLimit, paneMeterTokens, usageBlock, quotaAlerts } from "../scripts/usage-meters.mjs";
 import { discoverSessionDirs, aggregateSessionDir, mergeFleet } from "../scripts/fleet-status.mjs";
 import {
@@ -559,6 +561,8 @@ function runHostJob(repoRoot, change, command) {
 
 function notifyHumanNow(repoRoot, message, title) { return notifyHuman(repoRoot, message, title); }
 function notifyHuman(repoRoot, message, title = "Harness handoff") {
+  // native notification with buttons (HarnessNotify.app, scripts/notify.mjs) when installed
+  if (notifyRich(message, title)) { logEvent(repoRoot, `NOTIFY(native) ${message}`); return true; }
   const tries = [["notification", "show", `${title}: ${message}`.slice(0, 240)]];
   for (const args of tries) { const r = herdr(args, { timeoutMs: 5000 }); if (r.ok) { logEvent(repoRoot, `NOTIFY(herdr) ${message}`); return true; } }
   if (process.platform === "darwin") {
@@ -696,6 +700,14 @@ function checkQuotaAlerts(repoRoot, usage, pipeline) {
 /** Spawn scripts/herdr-launch.sh detached; it registers the new pane itself. */
 function launchRole(repoRoot, { role, change, text, backend, splitTarget, plannerName, routedModel = null, routedWhy = null, layout = null, routedEffort = null }) {
   const script = join(repoRoot, "scripts", "herdr-launch.sh");
+  // Jules works in Google's cloud: no pane, no container - start the session and follow it by polling
+  if (role === "worker" && backend === "jules") {
+    const log = join(repoRoot, ".pi-session", "jules", "start.log");
+    try { mkdirSync(dirname(log), { recursive: true }); } catch { /* */ }
+    const child = spawn("/bin/sh", ["-c", `"${process.execPath}" scripts/jules-worker.mjs start "${change}" >> "${log}" 2>&1`], { cwd: repoRoot, detached: true, stdio: "ignore" });
+    child.unref();
+    return ["jules", change];
+  }
   let args;
   if (role === "worker") args = ["worker", change, backend || "pi"];
   // an integrator needs a NAME (its session folder .pi-session/integrator-<name>, container, lock holder):
@@ -990,7 +1002,7 @@ export function reconcile(repoRoot, { echo = false } = {}) {
         const splitTarget = (panes.find((p) => p.role === d.entry.role) ?? panes.find((p) => p.focused) ?? panes[0])?.pane_id;
         const args = launchRole(repoRoot, { role: d.role, change, text: d.text, backend, splitTarget, plannerName, routedModel: routed?.pick?.model ?? null, routedWhy: routed?.reason ?? null, routedEffort: routed?.pick?.effort ?? null });
         say(`LAUNCH ${tag} -> scripts/herdr-launch.sh ${args.join(" ")}`);
-        scheduleLaunchCheck(repoRoot, change, d.role, d.entry.id);
+        if (args[0] !== "jules") scheduleLaunchCheck(repoRoot, change, d.role, d.entry.id);
       }
       if (d.stateUpdate) Object.assign(cstate, d.stateUpdate, { deferred: null });
       state.changes[change] = cstate;
@@ -1157,6 +1169,13 @@ export function reconcile(repoRoot, { echo = false } = {}) {
 function flushOutbox(repoRoot, outbox) {
   if (!outbox.length) return;
   if (outbox.length === 1) { notifyHumanNow(repoRoot, outbox[0].msg, outbox[0].title); return; }
+  // with native notifications every item gets its own notification and buttons (at most 6 a pass)
+  if (notifyAppInstalled()) {
+    const items = outbox.slice(0, 6);
+    for (const o of items) notifyHumanNow(repoRoot, o.msg, o.title ?? "Harness");
+    if (outbox.length > items.length) notifyHumanNow(repoRoot, `${outbox.length - items.length} more updates - see .pi-session/STATUS.md`, "Harness");
+    return;
+  }
   const digest = outbox.find((o) => o.title === "Harness digest");
   const rest = outbox.filter((o) => o !== digest);
   const msg = (rest.length > 1 ? `${rest.length} updates: ` : "") + rest.map((o) => o.msg).join(" || ") + (digest ? ` || ${digest.msg}` : "");
@@ -1171,6 +1190,8 @@ function flushOutbox(repoRoot, outbox) {
  * which normal routing then delivers in the same pass.
  */
 function superviseStep({ repoRoot, change, entries, cstate, panes, byChange, yamlOf, depsOn, wd, watchNow, say, notifyHuman }) {
+  // a Jules session is the worker for this change: no pane to watch; jules-worker.mjs poll reports back
+  try { if (julesActive(repoRoot, change)) return null; } catch { /* no jules state */ }
   const last = entries[entries.length - 1];
   const pending = depsOn && last.verdict !== "merged" ? pendingDeps(change, { byChange, yamlOf }) : [];
   const busy = (role) => panes.some((p) => p.role === role && (role !== "worker" || p.change === change) && p.agent_status === "working");
@@ -1490,7 +1511,7 @@ export function ensureHeartbeat(repoRoot) {
 function heartbeatLoop(repoRoot) {
   let misses = 0;
   // exit when the harness code changes; the next Herdr event starts a heartbeat with the new code
-  const code = [join(HERE, "lifecycle-watcher.mjs"), join(repoRoot, "scripts", "harness-supervisor.mjs"), join(repoRoot, "scripts", "route-worker.mjs"), join(repoRoot, "scripts", "handoff.mjs")];
+  const code = [join(HERE, "lifecycle-watcher.mjs"), join(repoRoot, "scripts", "harness-supervisor.mjs"), join(repoRoot, "scripts", "route-worker.mjs"), join(repoRoot, "scripts", "handoff.mjs"), join(repoRoot, "scripts", "notify.mjs"), join(repoRoot, "scripts", "jules-worker.mjs")];
   const stamp = () => code.map((f) => { try { return statSync(f).mtimeMs; } catch { return 0; } }).join(",");
   const born = stamp();
   const tick = () => {
@@ -1507,12 +1528,24 @@ function heartbeatLoop(repoRoot) {
   setInterval(tick, secs * 1000);
 }
 
+/** Follow active Jules sessions every poll_minutes (detached; it records handoffs itself). */
+function maybePollJules(repoRoot) {
+  if (!Object.values(julesSessions(repoRoot)).some((r) => !r.handled)) return;
+  const last = join(repoRoot, ".pi-session", "jules", "last-poll");
+  let age = Infinity; try { age = Date.now() - statSync(last).mtimeMs; } catch { /* never */ }
+  if (age < (julesConfig(repoRoot).poll_minutes ?? 3) * 60e3) return;
+  try { writeFileSync(last, new Date().toISOString()); } catch { /* */ }
+  const log = join(repoRoot, ".pi-session", "jules", "poll.log");
+  spawn("/bin/sh", ["-c", `"${process.execPath}" scripts/jules-worker.mjs poll >> "${log}" 2>&1`], { cwd: repoRoot, detached: true, stdio: "ignore" }).unref();
+}
+
 export function nudge(repoRoot, why, { force = false } = {}) {
   const f = join(repoRoot, ".pi-session", "herdr-lifecycle", "last-nudge");
   try { if (!force && Date.now() - statSync(f).mtimeMs < NUDGE_MIN_INTERVAL_MS) return false; } catch { /* first nudge */ }
   try { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, `${new Date().toISOString()} ${why}\n`); } catch { /* best effort */ }
   if (force || why === "startup") logEvent(repoRoot, `NUDGE ${why} -> reconcile`);
   try { reconcile(repoRoot); } catch (e) { logEvent(repoRoot, `ERROR nudge ${why}: ${e.message}`); }
+  try { maybePollJules(repoRoot); } catch (e) { logEvent(repoRoot, `ERROR jules poll: ${e.message}`); }
   return true;
 }
 

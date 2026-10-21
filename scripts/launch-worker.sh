@@ -532,6 +532,11 @@ if [ "$BACKEND" = "pi" ]; then
     -e LOCAL_LLM_BASE_URL="$LLM")
   [ -n "$PI_CONFIG_DIR" ] && args+=(-v "$PI_CONFIG_DIR/.pi/agent/auth.json:/home/node/.pi/agent/auth.json")
   [ -n "$MODELS_JSON" ] && args+=(-v "$MODELS_JSON:/home/node/.pi/agent/models.json")
+  # openai-free/* workers: the OpenAI key from the Keychain goes into THIS container only, by name (not on the command line)
+  if [[ "$MODEL" == openai/* ]] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    OPENAI_API_KEY="$(node "$REPO/scripts/secrets.mjs" get openai 2>/dev/null || true)"; export OPENAI_API_KEY
+  fi
+  [[ "$MODEL" == openai/* ]] && [ -n "${OPENAI_API_KEY:-}" ] && args+=(-e OPENAI_API_KEY)
   # Machine-wide pi keybindings (e.g. a second key for "restore queued messages",
   # since Herdr itself takes alt+up): ~/.harness/config/pi/.pi/agent/keybindings.json
   [ -f "$HARNESS_CONFIG_ROOT/pi/.pi/agent/keybindings.json" ] && args+=(-v "$HARNESS_CONFIG_ROOT/pi/.pi/agent/keybindings.json:/home/node/.pi/agent/keybindings.json:ro")
