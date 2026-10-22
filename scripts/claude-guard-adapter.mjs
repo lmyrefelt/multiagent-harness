@@ -57,6 +57,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { loadCounters } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -147,13 +148,6 @@ const counterStatePath = (sessionId) => {
   const dir = evidence ? dirname(evidence) : ".";
   return join(dir, `claude-counters-${sessionId || "default"}.json`);
 };
-
-function loadCounters(path, newCounters) {
-  if (existsSync(path)) {
-    try { return JSON.parse(readFileSync(path, "utf8")); } catch { /* fall through to fresh */ }
-  }
-  return newCounters();
-}
 
 async function main() {
   let raw = "";

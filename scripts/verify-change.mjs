@@ -369,6 +369,13 @@ export function findChangeDir(root, num) {
  * records' own timestamps can. Malformed lines are skipped, not fatal — a
  * crashed write mid-line must not take down an otherwise-good check.
  */
+export function loadCounters(path, newCounters) {
+  if (existsSync(path)) {
+    try { return JSON.parse(readFileSync(path, "utf8")); } catch { /* fall through to fresh */ }
+  }
+  return newCounters();
+}
+
 export function readEvidenceRecords(root, listFn = readdirSync, readFn = readFileSync, existsFn = existsSync) {
   const base = join(root, ".pi-session");
   if (!existsFn(base)) return [];
