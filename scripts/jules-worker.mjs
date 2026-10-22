@@ -11,6 +11,9 @@
  *   node scripts/jules-worker.mjs status                  sessions and today's count
  *   node scripts/jules-worker.mjs reply CHANGE-NNNN <text>    answer Jules (also a notification button)
  *   node scripts/jules-worker.mjs approve-plan CHANGE-NNNN
+ *   node scripts/jules-worker.mjs task <KEY> --title T --prompt-file F [--branch main]
+ *        a free-form session that is NOT a change (analysis, audit): no ledger entry; when it ends the
+ *        owner gets a notification with the PR / result. KEY names it for status/reply (e.g. ANALYSIS-1).
  *   node scripts/jules-worker.mjs --selftest
  *
  * Flow: start -> Jules works from the change branch (pushed to origin) -> PR -> poll fetches the PR
@@ -105,6 +108,21 @@ async function start(change) {
 	return 0;
 }
 
+async function startTask(key, title, promptFile, branch = "main") {
+	const cfg = loadConfig();
+	if (!cfg.source) throw new Error("no Jules source set - run `node scripts/jules-worker.mjs sources` and put the repo's name in herdr-plugin/jules.json as \"source\"");
+	const ses = loadSessions();
+	if (ses[key] && !ses[key].handled) { console.log(`${key} already running: ${ses[key].url ?? ses[key].name}`); return 0; }
+	const prompt = readFileSync(resolve(REPO, promptFile), "utf8");
+	const s = await api("POST", "sessions", { prompt, title: title.slice(0, 120), sourceContext: { source: cfg.source, githubRepoContext: { startingBranch: branch } }, requirePlanApproval: !!cfg.require_plan_approval, automationMode: "AUTO_CREATE_PR" });
+	ses[key] = { kind: "task", name: s.name, id: s.id, url: s.url ?? null, branch, title, at: new Date().toISOString(), state: s.state ?? "QUEUED" };
+	saveSessions(ses);
+	mkdirSync(DIR, { recursive: true });
+	appendFileSync(join(DIR, "starts.jsonl"), JSON.stringify({ t: Date.now(), change: key, session: s.name }) + "\n");
+	console.log(`started ${s.name} (${key})${s.url ? " - " + s.url : ""}\nfollow it: node scripts/jules-worker.mjs status   (the watcher polls it every few minutes)`);
+	return 0;
+}
+
 async function lastAgentMessage(name) {
 	try { const a = await api("GET", `${name}/activities?pageSize=20`); const m = [...(a.activities ?? [])].reverse().find((x) => x.agentMessaged || x.planGenerated); return m?.agentMessaged?.agentMessage ?? (m?.planGenerated ? (m.planGenerated.plan?.steps ?? []).map((s, i) => `${i + 1}. ${s.title ?? ""}`).join("\n") : null); } catch { return null; }
 }
@@ -145,6 +163,14 @@ async function poll() {
 			if (s.state === "AWAITING_PLAN_APPROVAL") await postDecision(change, "Jules has a plan - approve it?", msg, [{ label: "Approve plan", cmd: ["node", "scripts/jules-worker.mjs", "approve-plan", change] }], reports);
 			else await postDecision(change, "Jules asks you", msg, [], reports);
 		}
+		if (rec.kind === "task" && DONE_STATES.includes(s.state)) {
+			const pr = (s.outputs ?? []).map((o) => o.pullRequest).find(Boolean);
+			const report = join(DIR, `${change}-result.md`);
+			writeFileSync(report, `# ${change}: ${rec.title}\n\n- State: ${s.state}\n- Pull request: ${pr?.url ?? "(none)"}\n- Session: ${s.url ?? rec.name}\n\n${pr?.description ?? (await lastAgentMessage(rec.name)) ?? ""}\n`);
+			await notify(`${change} (${rec.title}) ${s.state === "COMPLETED" ? "finished" : "failed"}${pr?.url ? ` - PR ${pr.url}` : ""}. See ${relative(REPO, report)}`, "Jules");
+			rec.handled = new Date().toISOString(); rec.pr = pr?.url ?? null; changed = true;
+			continue;
+		}
 		if (s.state === "COMPLETED") {
 			const pr = (s.outputs ?? []).map((o) => o.pullRequest).find(Boolean);
 			const report = join(DIR, `${change}-report.md`);
@@ -182,6 +208,11 @@ async function main() {
 	if (cmd === "sources") { const j = await api("GET", "sources?pageSize=50"); for (const s of j.sources ?? []) console.log(`${s.name}   ${s.githubRepo ? `${s.githubRepo.owner}/${s.githubRepo.repo}` : ""}`); if (!(j.sources ?? []).length) console.log("no sources - install the Jules GitHub app on the repo at jules.google.com"); return 0; }
 	if (cmd === "start") return start(a1);
 	if (cmd === "poll") return poll();
+	if (cmd === "task") {
+		const argv = process.argv.slice(2), opt = (k, d = null) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
+		if (!a1 || !opt("--prompt-file")) { console.error("usage: jules-worker.mjs task <KEY> --title T --prompt-file F [--branch main]"); return 2; }
+		return startTask(a1, opt("--title", a1), opt("--prompt-file"), opt("--branch", "main"));
+	}
 	if (cmd === "status") { const u = julesUsage().jules_daily; console.log(`today: ${u.used}/${u.limit} sessions`); for (const [c, r] of Object.entries(loadSessions())) console.log(`${c.padEnd(12)} ${String(r.state).padEnd(24)} ${r.handled ? "done" : "active"}  ${r.url ?? r.name}`); return 0; }
 	const rec = loadSessions()[a1];
 	if ((cmd === "reply" || cmd === "approve-plan") && !rec) { console.error(`no Jules session for ${a1}`); return 1; }
