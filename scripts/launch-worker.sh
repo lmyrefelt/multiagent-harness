@@ -525,11 +525,20 @@ if [ "$BACKEND" = "pi" ] && [ "${HARNESS_MODEL_RESOLVE:-1}" != 0 ] && [ -f "$REP
   fi
 fi
 
+# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
+DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
+DIFF_ENV=()
+if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
+  git -C "$WT" config diff.context "$DIFF_CTX" 2>/dev/null || true
+  DIFF_ENV=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
+fi
+
 if [ "$BACKEND" = "pi" ]; then
   args=(docker run --rm -it --network host
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -e PI_ROLE=worker
+    "${DIFF_ENV[@]}"
     -e LOOP_GUARD="${LOOP_GUARD:-shadow}"
     -e HARNESS_CHANGE="$CHANGE"
     -e CONTRACT_GUARDS="$GUARDS"
@@ -676,6 +685,7 @@ EOF
     -v "$REPO/$WT_REL/$HOOKS_DIR:/home/node/.gemini/config"
     -v "$REPO/$WT_REL/$PERMS_DIR:/home/node/.gemini/antigravity-cli"
     -e PI_ROLE=worker
+    "${DIFF_ENV[@]}"
     "$IMAGE"
     -i "$SEED")
   # -i/--prompt-interactive: runs an initial prompt, then stays in the session
@@ -760,6 +770,7 @@ EOF
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -e PI_ROLE=worker
+    "${DIFF_ENV[@]}"
     -v "$HARNESS_CLAUDE_CREDENTIALS:/home/node/.claude/.credentials.json"
     -e "CLAUDE_CODE_EFFORT_LEVEL=${EFFORT:-}"
     -v "$HARNESS_CLAUDE_ACCOUNT:/home/node/.claude.json")
@@ -848,7 +859,8 @@ EOF
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -v "$REPO/$WT_REL/$HOOKS_JSON:/home/node/.codex/hooks.json"
     -v "$HARNESS_CODEX_AUTH:/home/node/.codex/auth.json"
-    -e PI_ROLE=worker)
+    -e PI_ROLE=worker
+    "${DIFF_ENV[@]}")
   [ -n "${OPENAI_API_KEY:-}" ] && args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
   # pre-trust this workdir in config.toml (creates the file) - scripts/preaccept-startup.mjs
   if [ "$DRY" -eq 0 ]; then node "$REPO/scripts/preaccept-startup.mjs" codex "$HARNESS_CODEX_CONFIG_TOML" "/repo/$WT_REL"; fi
@@ -927,6 +939,7 @@ EOF
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -e PI_ROLE=worker
+    "${DIFF_ENV[@]}"
     -e OPENCODE_CONFIG_CONTENT="${OPENCODE_CONFIG_CONTENT:-$OC_TIMEOUTS}")
   # OPENCODE_CONFIG_DIR: optional, mirrors pi's own PI_CONFIG_DIR convention -
   # auth.json (~/.local/share/opencode/auth.json) is written by opencode's own
@@ -1074,12 +1087,6 @@ else
   echo "NOTE: this backend's field-name mappings (edit's oldString/newString, write's filePath) were"
   echo "      cross-checked against real GitHub issue reports, not a full official schema dump - verify"
   echo "      the first real launch actually blocks an out-of-bounds edit, not just that it compiles."
-fi
-# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
-DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
-if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
-  git -C "$WT" config diff.context "$DIFF_CTX" 2>/dev/null || true
-  args+=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
 fi
 
 if [ "$DRY" -eq 1 ]; then

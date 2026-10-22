@@ -413,6 +413,14 @@ if [ "$BACKEND" = "pi" ] && [ "${HARNESS_MODEL_RESOLVE:-1}" != 0 ] && [ -f "$REP
   fi
 fi
 
+# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
+DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
+DIFF_ENV=()
+if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
+  git -C "$REPO" config diff.context "$DIFF_CTX" 2>/dev/null || true
+  DIFF_ENV=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
+fi
+
 if [ "$BACKEND" = "pi" ]; then
   [ -z "$MODEL" ] && echo "WARN: INTEGRATOR_MODEL unset — pi will use its default provider, not a more-capable model (set INTEGRATOR_MODEL=local/<id>)." >&2
 
@@ -423,6 +431,7 @@ if [ "$BACKEND" = "pi" ]; then
     --name "harness-integrator-${NAME}"
     -v "$REPO:/repo" -w "/repo"
     -e PI_ROLE=integrator
+    "${DIFF_ENV[@]}"
     -e CONTRACT_GUARDS="$GUARDS"
     -e CONTRACT_EVIDENCE="$EVIDENCE"
     -e LOCAL_LLM_BASE_URL="$LLM")
@@ -490,6 +499,7 @@ EOF
     -v "$REPO:/repo" -w "/repo"
     -v "$REPO/$HOOKS_JSON:/home/node/.gemini/config/hooks.json"
     -e PI_ROLE=integrator
+    "${DIFF_ENV[@]}"
     -e LOCAL_LLM_BASE_URL="$LLM")
   [ "$SESSION_LOG_OUT" = "1" ] && args+=(-v "$REPO/$ANTIGRAVITY_BRAIN_REL:/home/node/.gemini/antigravity-cli/brain")
   args+=("$IMAGE")
@@ -524,6 +534,7 @@ EOF
     --name "harness-integrator-${NAME}"
     -v "$REPO:/repo" -w "/repo"
     -e PI_ROLE=integrator
+    "${DIFF_ENV[@]}"
     -v "$HARNESS_CLAUDE_CREDENTIALS:/home/node/.claude/.credentials.json"
     -v "$HARNESS_CLAUDE_ACCOUNT:/home/node/.claude.json")
   # pre-answer Claude's startup questions (folder trust, onboarding, bypass-mode warning) - scripts/preaccept-startup.mjs
@@ -568,7 +579,8 @@ EOF
     -v "$REPO:/repo" -w "/repo"
     -v "$REPO/$HOOKS_JSON:/home/node/.codex/hooks.json"
     -v "$HARNESS_CODEX_AUTH:/home/node/.codex/auth.json"
-    -e PI_ROLE=integrator)
+    -e PI_ROLE=integrator
+    "${DIFF_ENV[@]}")
   [ -n "${OPENAI_API_KEY:-}" ] && args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
   # pre-trust this workdir in config.toml (creates the file) - scripts/preaccept-startup.mjs
   if [ "$DRY" -eq 0 ]; then node "$REPO/scripts/preaccept-startup.mjs" codex "$HARNESS_CODEX_CONFIG_TOML" "/repo"; fi
@@ -668,13 +680,6 @@ else
 fi
 echo "lock      : $(scripts/integrator-lock.sh status 2>&1)"
 echo "            (the agent must claim it itself before merging: scripts/integrator-lock.sh claim $NAME)"
-
-# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
-DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
-if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
-  git -C "$REPO" config diff.context "$DIFF_CTX" 2>/dev/null || true
-  args+=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
-fi
 
 if [ "$DRY" -eq 1 ]; then
   echo "(dry-run: guards not compiled)"

@@ -364,11 +364,20 @@ if [ "$BACKEND" = "pi" ] && [ "${HARNESS_MODEL_RESOLVE:-1}" != 0 ] && [ -f "$REP
   fi
 fi
 
+# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
+DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
+DIFF_ENV=()
+if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
+  git -C "$WT" config diff.context "$DIFF_CTX" 2>/dev/null || true
+  DIFF_ENV=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
+fi
+
 if [ "$BACKEND" = "pi" ]; then
   args=(docker run --rm -it --network host
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -e PI_ROLE=planner
+    "${DIFF_ENV[@]}"
     -e CONTRACT_GUARDS="$GUARDS"
     -e CONTRACT_EVIDENCE="$EVIDENCE"
     -e LOCAL_LLM_BASE_URL="$LLM")
@@ -434,6 +443,7 @@ EOF
     -v "$REPO/$WT_REL/$HOOKS_DIR:/home/node/.gemini/config"
     -v "$REPO/$WT_REL/$PERMS_DIR:/home/node/.gemini/antigravity-cli"
     -e PI_ROLE=planner
+    "${DIFF_ENV[@]}"
     "$IMAGE"
     -i "$SEED")
 
@@ -462,7 +472,8 @@ EOF
   args=(docker run --rm -it --network host
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
-    -e PI_ROLE=planner)
+    -e PI_ROLE=planner
+    "${DIFF_ENV[@]}")
   OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-}"
   if [ -n "$OPENCODE_CONFIG_DIR" ]; then
     if [ ! -f "$OPENCODE_CONFIG_DIR/auth.json" ]; then
@@ -504,6 +515,7 @@ EOF
     --name "$NAME"
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -e PI_ROLE=planner
+    "${DIFF_ENV[@]}"
     -v "$HARNESS_CLAUDE_CREDENTIALS:/home/node/.claude/.credentials.json"
     -v "$HARNESS_CLAUDE_ACCOUNT:/home/node/.claude.json")
   # pre-answer Claude's startup questions (folder trust, onboarding, bypass-mode warning) - scripts/preaccept-startup.mjs
@@ -548,7 +560,8 @@ EOF
     -v "$REPO:/repo" -w "/repo/$WT_REL"
     -v "$REPO/$WT_REL/$HOOKS_JSON:/home/node/.codex/hooks.json"
     -v "$HARNESS_CODEX_AUTH:/home/node/.codex/auth.json"
-    -e PI_ROLE=planner)
+    -e PI_ROLE=planner
+    "${DIFF_ENV[@]}")
   [ -n "${OPENAI_API_KEY:-}" ] && args+=(-e "OPENAI_API_KEY=$OPENAI_API_KEY")
   # pre-trust this workdir in config.toml (creates the file) - scripts/preaccept-startup.mjs
   if [ "$DRY" -eq 0 ]; then node "$REPO/scripts/preaccept-startup.mjs" codex "$HARNESS_CODEX_CONFIG_TOML" "/repo/$WT_REL"; fi
@@ -640,12 +653,6 @@ else
   else
     echo "sessions  : not mounted (SESSION_LOG_OUT=0) - codex's own rollout logs die with the container"
   fi
-fi
-# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
-DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
-if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
-  git -C "$WT" config diff.context "$DIFF_CTX" 2>/dev/null || true
-  args+=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
 fi
 
 if [ "$DRY" -eq 1 ]; then
