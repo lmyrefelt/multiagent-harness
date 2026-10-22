@@ -1,0 +1,22 @@
+id: CHANGE-0101
+title: performance optimization
+type: feature
+
+status: draft              # planner lane: draft -> specified (see COORDINATION.md)
+
+base_branch: main
+branch: null               # set by the integrator at approval, not by the planner
+worktree: null
+
+# CHANGE ids this change needs merged first. MUST stay acyclic: if X and Y would
+# depend on each other, extract the shared piece into its own change and depend on
+# THAT instead (see COORDINATION.md "breaking cycles"). check-change-overlap flags cycles.
+depends_on: []
+
+owned_paths: []            # fill from discovery before implementation
+forbidden_paths: []
+
+requirements: []           # REQ-NNNN-nnn ids, defined in specification.md
+# Per-requirement state, updated by the worker as it goes (resume/handoff + integrator
+# visibility). One key per requirement. Values: pending | red | green.
+progress: {}
