@@ -183,9 +183,10 @@ function selftest() {
 		+ 'deepseek_api::deepseek-v4.1-flash,DeepSeek V4.1 Flash API,metered,deepseek-v4.1-flash,DeepSeek V4.1 Flash,,,0.019,high,,False,,,,81.2,\n'
 		+ 'deepseek_api_offpeak::deepseek-v4.1-flash,DeepSeek V4.1 Flash API off-peak,metered,deepseek-v4.1-flash,DeepSeek V4.1 Flash,,,0.010,high,,False,,,,81.2,\n'
 		+ 'claude_pro::claude-opus-5.5,Claude Pro,subscription,claude-opus-5.5,Claude Opus 5.5,20.0,30.54,0.007,high,,False,,65.9886,,,\n'
-		+ 'openrouter::claude-opus-5.5,OpenRouter,metered,claude-opus-5.5,Claude Opus 5.5,,,0.419,high,,False,,65.9886,,,\n';
+		+ 'openrouter::claude-opus-5.5,OpenRouter,metered,claude-opus-5.5,Claude Opus 5.5,,,0.419,high,,False,,65.9886,,,\n'
+		+ 'unmetered_test::unmetered-model,Unmetered Plan,subscription,unmetered-model,Unmetered Model,10.0,10.0,0.1,high,,True,promo,,,,\n';
 	const rows = compactRows(parseCsv(csv));
-	ok(rows.length === 7 && rows[1].monthly_tokens === 159000000 && rows[0].scores.aa_coding_agent_index.score === 62.9078, "parses CSV (quotes, BOM, 1 yi = 100M tokens)");
+	ok(rows.length === 8 && rows[1].monthly_tokens === 159000000 && rows[0].scores.aa_coding_agent_index.score === 62.9078, "parses CSV (quotes, BOM, 1 yi = 100M tokens)");
 	const plans = DEFAULT_PLANS;
 	ok(rowFor({ id: "openai-codex/gpt-6.1-sol" }, rows, plans)?.id === "chatgpt_plus::gpt-6.1-sol", "openai-codex -> ChatGPT Plus row");
 	ok(rowFor({ id: "codex/default", score_name: "gpt-6.1-sol" }, rows, plans)?.plan === "ChatGPT Plus", "codex CLI uses score_name");
@@ -194,6 +195,15 @@ function selftest() {
 	ok(rowFor({ id: "opencode/deepseek-v4.1-flash" }, rows, plans)?.real_usd_per_mtok === 0.010, "pay-per-token -> cheapest metered row");
 	ok(rowFor({ id: "opencode-go/deepseek-v4.1-flash" }, rows, plans)?.real_usd_per_mtok === 0.002, "opencode-go -> Go plan row");
 	ok(priceFor({ id: "openrouter/x/y:free", cost: "free" }, { rows }).usd_per_mtok === 0, "free = 0");
+	ok(priceFor({ id: "openrouter/x/y:local", cost: "local" }, { rows }).usd_per_mtok === 0, "local = 0");
+	ok(priceFor(null, { rows }) === null, "null entry = null");
+	ok(priceFor({ id: "unknown/model" }, { rows }, plans) === null, "unknown model = null");
+	ok(priceFor({ id: "openai-codex/gpt-6.1-sol" }, { rows }, plans)?.usd_per_mtok === 0.023, "extracts full pricing");
+	ok(priceFor({ id: "openai-codex/gpt-6.1-sol" }, { rows }, plans)?.monthly_tokens === 870000000, "extracts monthly tokens");
+	ok(priceFor({ id: "openai-codex/gpt-6.1-sol" }, { rows }, plans)?.confidence === "high", "extracts confidence");
+	ok(priceFor({ id: "openai-codex/gpt-6.1-sol" }, { rows }, plans)?.plan === "ChatGPT Plus", "extracts plan");
+	ok(priceFor({ id: "openai-codex/gpt-6.1-sol" }, { rows }, plans)?.source === "plan", "extracts source subscription -> plan");
+	ok(priceFor({ id: "unmetered/unmetered-model", pricing: { plan: "Unmetered Plan" } }, { rows }, plans)?.usd_per_mtok === 0, "unmetered_until sets price to 0");
 	ok(scoresFor({ id: "opencode/deepseek-v4.1-flash" }, rows).open_design_arena?.score === 81.2, "scores follow the model");
 	const par = paretoIds([{ id: "a", price: 0.002, score: 80 }, { id: "b", price: 0.02, score: 90 }, { id: "c", price: 0.1, score: 85 }, { id: "d", price: 0.002, score: 70 }]);
 	ok(par.has("a") && par.has("b") && !par.has("c") && !par.has("d"), "pareto: c is dominated by b, d by a");
