@@ -98,6 +98,23 @@ function selftest() {
 	ok(a["anthropic/claude-opus-5-5"].turns === 1 && a["anthropic/claude-opus-5-5"].cached === 990, "Claude Code, deduped by message id");
 	ok(a["codex/gpt-6.1-sol"].fresh === 400 && a["codex/gpt-6.1-sol"].cached === 600, "Codex: cached is part of input");
 	ok(a.antigravity.fresh === 500, "Antigravity");
+
+	// Test accumulation into an existing object
+	const existingObj = {
+		"antigravity": { fresh: 100, cached: 200, written: 50, turns: 2 }
+	};
+	const newLines = [
+		JSON.stringify({ type: "PLANNER_RESPONSE", input_tokens: "300", cache_read_tokens: "150" }),
+		'{"type": "PLANNER_RESPONSE", invalid json that still matches usage|token_count|turn_context|PLANNER_RESPONSE regex}',
+		JSON.stringify({ type: "message", message: { role: "assistant", usage: { input: 10 } } }) // no provider/model
+	];
+	const a2 = aggregate(newLines, existingObj);
+	ok(a2 === existingObj, "aggregate returns the mutated input object");
+	ok(a2.antigravity.fresh === 250, "accumulates fresh (100 + (300-150))");
+	ok(a2.antigravity.cached === 350, "accumulates cached (200 + 150)");
+	ok(a2.antigravity.turns === 3, "accumulates turns (2 + 1)");
+	ok(a2["?"].fresh === 10, "adds new model to existing object");
+
 	if (fails) { console.error(`${fails} cache-stats self-test(s) FAILED`); return 1; }
 	console.log("cache-stats self-test: all passed");
 	return 0;
