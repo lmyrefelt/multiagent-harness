@@ -18,7 +18,20 @@
 // Same "thin translation layer, not new enforcement logic" principle every
 // other adapter in this project states in its own header.
 //
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+
 export { };
+
+/**
+ * Loads the current attempts counter from a state file, returning 0 if
+ * absent or unreadable.
+ */
+export function loadAttempts(path) {
+  if (existsSync(path)) {
+    try { return JSON.parse(readFileSync(path, "utf8")).attempts ?? 0; } catch { /* fall through */ }
+  }
+  return 0;
+}
 
 /**
  * Pure decision core - given everything already extracted/read from
@@ -109,6 +122,22 @@ function selftest() {
     testsRanAndPassedFn: () => ({ passed: false, reason: "tests ran but failed/errored" }), claimsCompletionFn: alwaysClaims, isTestInvocationFn: fakeIsTestInvocation,
   });
   ok(r.outcome === "exhausted" && r.attempts === 3, "priorAttempts already at max (2) -> this attempt (3) exceeds it -> exhausted, not another fired");
+
+  // loadAttempts
+  {
+    const tmp = `/tmp/completion-gate-core-selftest-${process.pid}.json`;
+    try {
+      ok(loadAttempts(tmp) === 0, "loadAttempts on non-existent file returns 0");
+
+      writeFileSync(tmp, JSON.stringify({ attempts: 2 }));
+      ok(loadAttempts(tmp) === 2, "loadAttempts on valid file returns the attempts value");
+
+      writeFileSync(tmp, "not json");
+      ok(loadAttempts(tmp) === 0, "loadAttempts on malformed file falls back to 0");
+    } finally {
+      try { unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    }
+  }
 
   if (fails) { console.error("\n" + fails + " self-test(s) FAILED"); process.exit(1); }
   console.log("completion-gate-core self-test: all passed");
