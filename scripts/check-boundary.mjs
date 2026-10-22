@@ -30,6 +30,7 @@
 import { execSync, execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { findChangeDir } from "./verify-change.mjs";
 
 const NUL = String.fromCharCode(0);
 const SP = String.fromCharCode(32);
@@ -106,16 +107,6 @@ function globToRe(glob) {
     .replace(new RegExp(SP, "g"), ".*")
     .replace(/\?/g, ".");
   return new RegExp("^" + re + "$");
-}
-
-function findChangeDir(root, num) {
-  const base = join(root, "docs", "changes");
-  if (!existsSync(base)) return null;
-  const hit = readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`).test(e.name))
-    .map((e) => join(base, e.name))
-    .find((d) => existsSync(join(d, "change.yaml")));
-  return hit ?? null;
 }
 
 // Object id of a rev/blob spec (e.g. "MERGE_HEAD", ":path", "<sha>:path"), or null if absent.

@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { findChangeDir } from "./verify-change.mjs";
 
 const SP = String.fromCharCode(32);
 const NL = String.fromCharCode(10);
@@ -40,16 +41,6 @@ export function verdict(expected, current) {
   if (!expected) return { ok: false, why: "change.yaml has no branch set - assign feature/CHANGE-NNNN-<slug> and approve the boundary first" };
   if (current !== expected) return { ok: false, why: `HEAD is "${current}", but this change must be worked on "${expected}"` };
   return { ok: true, why: `on ${expected}` };
-}
-
-function findChangeDir(root, num) {
-  const base = join(root, "docs", "changes");
-  if (!existsSync(base)) return null;
-  const n = readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`).test(e.name))
-    .map((e) => e.name)
-    .find((x) => existsSync(join(base, x, "change.yaml")));
-  return n ? join(base, n) : null;
 }
 
 function main() {

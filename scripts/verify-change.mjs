@@ -351,7 +351,7 @@ export function checkHandover(handover, headSha, opts = {}) {
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-function findChangeDir(root, num) {
+export function findChangeDir(root, num) {
   const base = join(root, "docs", "changes");
   if (!existsSync(base)) return null;
   return readdirSync(base, { withFileTypes: true })

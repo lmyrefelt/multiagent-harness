@@ -21,8 +21,9 @@
 // single source of truth; this output is a build artifact, not committed.
 //
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { execSync } from "node:child_process";
+import { findChangeDir } from "./verify-change.mjs";
 
 const SP = String.fromCharCode(32);
 const NL = String.fromCharCode(10);
@@ -302,23 +303,14 @@ export function buildGuards(cfg, changeDirGlob) {
   return guards;
 }
 
-function findChangeDir(root, num) {
-  const base = join(root, "docs", "changes");
-  if (!existsSync(base)) return null;
-  const hit = readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`).test(e.name))
-    .map((e) => e.name)
-    .find((n) => existsSync(join(base, n, "change.yaml")));
-  return hit ? `docs/changes/${hit}` : null;
-}
-
 function main() {
   const args = process.argv.slice(2);
   const idArg = args.find((a) => /^CHANGE-\d+$/i.test(a));
   const num = (idArg || "").replace(/\D+/g, "");
   if (!num) { console.error("usage: compile-change-guards.mjs CHANGE-NNNN [--out file]"); process.exit(1); }
   const root = execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
-  const dir = findChangeDir(root, num);
+  const absoluteDir = findChangeDir(root, num);
+  const dir = absoluteDir ? relative(root, absoluteDir).replace(/\\/g, "/") : null;
   if (!dir) { console.error(`no docs/changes/CHANGE-${num}-*/change.yaml found`); process.exit(1); }
   const cfg = readChange(readFileSync(join(root, dir, "change.yaml"), "utf8"));
   if (!cfg.owned_paths.length) { console.error(`${dir}/change.yaml has empty owned_paths - nothing to enforce`); process.exit(1); }
