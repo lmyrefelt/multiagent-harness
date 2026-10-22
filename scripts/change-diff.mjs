@@ -20,7 +20,7 @@
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { readHandover, readChangeConfig } from "./verify-change.mjs";
+import { readHandover, readChangeConfig, findChangeDir } from "./verify-change.mjs";
 
 /** Which ref to diff FROM, and why - the only logic this script adds on top of verify-change.mjs's readers. */
 export function pickFromRef(handover, baseBranch) {
@@ -29,15 +29,6 @@ export function pickFromRef(handover, baseBranch) {
     return { from: handover.at, why: `since the last handover (${handover.from} -> ${handover.to}, at ${handover.at})` };
   }
   return { from: base, why: `no handover yet - since branched from ${base}` };
-}
-
-function findChangeDir(root, num) {
-  const base = join(root, "docs", "changes");
-  if (!existsSync(base)) return null;
-  return readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`).test(e.name))
-    .map((e) => join(base, e.name))
-    .find((d) => existsSync(join(d, "change.yaml"))) ?? null;
 }
 
 const sh = (c) => execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

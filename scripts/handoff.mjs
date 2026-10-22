@@ -37,6 +37,7 @@ import { execFileSync, execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { findChangeDir as sharedFindChangeDir } from "./verify-change.mjs";
 
 export const ROLES = ["planner", "integrator", "worker", "runner"];
 // runner = host-side job runner (scripts/godot-qualify.mjs), started by the watcher - never an agent pane.
@@ -140,11 +141,7 @@ export function readTestsCommand(yamlPath) {
 
 export function findChangeDir(treeRoot, change) {
   const num = change.replace(/\D+/g, "");
-  const base = join(treeRoot, "docs", "changes");
-  if (!existsSync(base)) return null;
-  const hit = readdirSync(base, { withFileTypes: true })
-    .find((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`, "i").test(e.name));
-  return hit ? join(base, hit.name) : null;
+  return sharedFindChangeDir(treeRoot, num);
 }
 
 // ---------------------------------------------------------------------------

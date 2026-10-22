@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { findChangeDir } from "./verify-change.mjs";
 
 const NL = String.fromCharCode(10);
 const SEVERITY_ORDER = ["none", "low", "medium", "high", "critical"];
@@ -71,15 +72,6 @@ export function escalateReviewerRequired(current, panelSeverity) {
 }
 
 // --- change.yaml narrow read/write -----------------------------------------
-
-function findChangeDir(root, num) {
-  const base = join(root, "docs", "changes");
-  const hit = readdirSync(base, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && new RegExp(`^CHANGE-0*${num}(\\D|$)`).test(e.name))
-    .map((e) => e.name)
-    .find((n) => existsSync(join(base, n, "change.yaml")));
-  return hit ? join(base, hit) : null;
-}
 
 /** { tier, reviewerRequired, tierLineIdx, reviewerRequiredLineIdx } - line indexes into `lines`. */
 function readRiskBlock(lines) {
