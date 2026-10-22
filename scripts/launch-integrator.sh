@@ -308,6 +308,7 @@ if [ "$BACKEND" = "pi" ]; then
     PCD="$PI_CONTRACTS_DIR"
     CURRENT_FP=$(
       { [ -f "$PCD/Dockerfile.pi-integrator" ] && cat "$PCD/Dockerfile.pi-integrator"
+        [ -f "$PCD/Dockerfile.pi-contracts" ] && cat "$PCD/Dockerfile.pi-contracts"
         find "$PCD/prototype" -type f 2>/dev/null | sort | while IFS= read -r f; do cat "$f"; done
         [ -f "$PCD/models.json" ] && cat "$PCD/models.json"
         [ -f "$PCD/settings.defaults.json" ] && cat "$PCD/settings.defaults.json"
@@ -390,6 +391,11 @@ SEED="$SEED Claim scripts/integrator-lock.sh claim $NAME yourself before any mer
 # reports its outcome; the Herdr lifecycle watcher starts the next role.
 SEED="$SEED Write every review from the standard template (node /repo/scripts/handoff.mjs new --change CHANGE-NNNN --role integrator - fill every section, stable finding IDs F1, F2...) and end with exactly one handoff as your LAST action: node /repo/scripts/handoff.mjs report --change CHANGE-NNNN --role integrator --verdict <plan-approved|plan-changes-requested|impl-changes-requested|merged|needs-human|needs-qualification|question> --file <that review file> --note '<one line>'. After a merged verdict, if the roadmap names the next change, reserve it (allocate the CHANGE id, commit its folder on main) and start its planning yourself with one more report: node /repo/scripts/handoff.mjs report --change CHANGE-NNNN --role integrator --verdict plan-requested --file <the brief or research doc the planner must read> --note \"<scope in one line>\". Never ask the owner to paste a prompt to the planner. Before plan-approved, set status: approved and branch: in change.yaml, add routing: {complexity: S|M|L|XL, visual: true|false, reason: ...} (your size estimate - it picks the worker's model; visual = SVG/CSS/canvas/sprites/UI art), and land the planning docs on main. The planner/worker is started for you - never ask the owner to relay it. Changes touching godot-project/: report needs-qualification (no --file) before merging and wait for the runner's qualified/qualification-failed result - see AGENTS.md 'Godot engine work'."
 [ -n "${TASK:-}" ] && SEED="$SEED $TASK"
+
+# Token frugality & anti-overthinking (from upstream llmtrim research; HARNESS_FRUGAL_SEED=0 reverts)
+if [ "${HARNESS_FRUGAL_SEED:-1}" != "0" ]; then
+  SEED="$SEED Use the fewest tool-use turns: run independent tool calls together in one turn, take all you need from each result, and never repeat a call you've already made. When your reasoning reaches an answer, commit to it immediately (avoid restarting with 'Wait' or 'Actually')."
+fi
 
 # Never start pi with a model it cannot resolve ("Model local/<id> not found").
 # scripts/resolve-model.mjs asks the local server what it serves when no mounted
@@ -662,6 +668,13 @@ else
 fi
 echo "lock      : $(scripts/integrator-lock.sh status 2>&1)"
 echo "            (the agent must claim it itself before merging: scripts/integrator-lock.sh claim $NAME)"
+
+# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
+DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
+if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
+  git -C "$REPO" config diff.context "$DIFF_CTX" 2>/dev/null || true
+  args+=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
+fi
 
 if [ "$DRY" -eq 1 ]; then
   echo "(dry-run: guards not compiled)"

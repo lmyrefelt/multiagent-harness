@@ -422,6 +422,37 @@ console.log("\nredundant test/build rerun detection (redundant_test_rerun)");
 	});
 }
 
+console.log("\ntoken budget (read_budget)");
+{
+	const guard = {
+		id: "efficiency.read_budget", clause: "read_budget", bucket: "invariant",
+		check: "read_budget", hook: "tool_call", phase: "during", implemented: true,
+		params: { max_bytes: 100 },
+		on_violation: "redirect",
+	};
+	t("negative: small read or ranged read passes without redirect", () => {
+		const ctx = { repoRoot: "/repo", counters: newCounters() };
+		const r = evaluateDuring([guard], { toolName: "read", input: { path: "small.txt", offset: 1, limit: 10 } }, ctx);
+		assert(!r.redirected && !r.blocked, "ranged read should never be redirected or blocked");
+	});
+	t("positive: whole-file read of a large file redirects with outline and does NOT count as a refusal", () => {
+		const ctx = { repoRoot: "/repo", counters: newCounters() };
+		const tmp = join(tmpdir(), `read_budget_test_${Date.now()}.txt`);
+		writeFileSync(tmp, "line1: hello\nline2: world\n" + "x".repeat(200));
+		try {
+			const r = evaluateDuring([guard], { toolName: "read", input: { path: tmp } }, ctx);
+			assert(r.redirected && r.blocked, "should be redirected");
+			assert(ctx.counters.consecutive_blocks === 0, "redirect must not increment consecutive_blocks");
+			assert(ctx.counters.total_blocks === 0, "redirect must not increment total_blocks");
+			// second read of same path passes (escape hatch)
+			const r2 = evaluateDuring([guard], { toolName: "read", input: { path: tmp } }, ctx);
+			assert(!r2.redirected && !r2.blocked, "second ask for same path must pass");
+		} finally {
+			try { rmSync(tmp, { force: true }); } catch {}
+		}
+	});
+}
+
 // --- post-run checks -------------------------------------------------------
 // evaluatePost takes {finalText, toolResults}, not a bare string. The signature
 // changed when evidence_required was replaced by evidence_captured: the rule is
@@ -1054,7 +1085,7 @@ console.log("\nintegrator_merge_gate (base-branch and planning/* carve-outs, rea
 
 // --- command_forbidden: worktree remove/unlock carve-out (2026-10-09) -----
 // MEASURED: `git worktree prune` (run directly, not by a guarded agent - see
-// commit 19c629f1 in the host project) destroyed the admin links for EVERY
+// commit 19c629f1 in master_project) destroyed the admin links for EVERY
 // real worktree in the repo, because it is a BULK, heuristic operation that
 // judges every worktree "stale" from whatever environment runs it - the
 // exact failure mode that motivated blocking `worktree` outright in the
@@ -1271,7 +1302,7 @@ t("every declared guard is exercised by at least one case above", () => {
 	const unexercised = guards
 		.filter((g) => g.phase === "during")
 		.map((g) => g.check)
-		.filter((c) => !["tool_call_limit", "file_boundary", "path_protected", "test_integrity", "command_forbidden", "integrator_merge_gate", "lock_required_for_write", "structured_file_validity", "no_progress_loop", "redundant_test_rerun"].includes(c));
+		.filter((c) => !["tool_call_limit", "file_boundary", "path_protected", "test_integrity", "command_forbidden", "integrator_merge_gate", "lock_required_for_write", "structured_file_validity", "no_progress_loop", "redundant_test_rerun", "read_budget"].includes(c));
 	assert(unexercised.length === 0, `guards with no self-test: ${unexercised.join(", ")}`);
 });
 t("every `pre` guard is exercised by a case above", () => {
@@ -1305,11 +1336,11 @@ t("every check kind used by the contract is in the engine registry", () => {
 	const unknown = [...new Set(guards.map((g) => g.check))].filter((c) => !IMPLEMENTED_CHECKS.has(c));
 	assert(unknown.length === 0, `contract uses unimplemented check kinds: ${unknown.join(", ")}`);
 });
-t("the fourteen registered check kinds are all covered by a self-test group", () => {
+t("the registered check kinds are all covered by a self-test group", () => {
 	const tested = new Set(["file_exists", "file_boundary", "path_protected", "test_integrity",
 		"command_forbidden", "evidence_captured", "evidence_required", "always_state", "tool_call_limit",
 		"integrator_merge_gate", "lock_required_for_write", "structured_file_validity", "no_progress_loop",
-		"redundant_test_rerun"]);
+		"redundant_test_rerun", "read_budget"]);
 	const untested = [...IMPLEMENTED_CHECKS].filter((k) => !tested.has(k));
 	assert(untested.length === 0, `engine implements checks with no self-test: ${untested.join(", ")}`);
 });

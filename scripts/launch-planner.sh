@@ -212,6 +212,7 @@ if [ "$BACKEND" = "pi" ]; then
     PCD="$PI_CONTRACTS_DIR"
     CURRENT_FP=$(
       { [ -f "$PCD/Dockerfile.pi-planner" ] && cat "$PCD/Dockerfile.pi-planner"
+        [ -f "$PCD/Dockerfile.pi-contracts" ] && cat "$PCD/Dockerfile.pi-contracts"
         find "$PCD/prototype" -type f 2>/dev/null | sort | while IFS= read -r f; do cat "$f"; done
         [ -f "$PCD/models.json" ] && cat "$PCD/models.json"
         [ -f "$PCD/settings.defaults.json" ] && cat "$PCD/settings.defaults.json"
@@ -341,6 +342,11 @@ SEED="Confirm your role (planner) and follow AGENTS.md's dispatch table for it b
 # reports its outcome; the Herdr lifecycle watcher starts the next role.
 SEED="$SEED When a plan or a plan revision is ready for the integrator, commit it on your planning branch, write your handoff from the standard template (node /repo/scripts/handoff.mjs new --change CHANGE-NNNN --role planner - fill every section) and, as your LAST action, run: node /repo/scripts/handoff.mjs report --change CHANGE-NNNN --role planner --verdict plan-ready --file <that handoff file> --note '<what changed>'. If you need a DECISION the integrator can make (contract or save-format ownership, which change owns what, sequencing, conflicting ADRs, boundaries), write the proposal down and use --verdict needs-decision --file <that proposal> --note '<the decision needed>' - the integrator is started for you. Use --verdict question ONLY for what only the owner can decide (scope, priorities, money, people outside the harness). The integrator is started for you - never ask the owner to relay it."
 [ -n "${TASK:-}" ] && SEED="$SEED $TASK"
+
+# Token frugality & anti-overthinking (from upstream llmtrim research; HARNESS_FRUGAL_SEED=0 reverts)
+if [ "${HARNESS_FRUGAL_SEED:-1}" != "0" ]; then
+  SEED="$SEED Use the fewest tool-use turns: run independent tool calls together in one turn, take all you need from each result, and never repeat a call you've already made. When your reasoning reaches an answer, commit to it immediately (avoid restarting with 'Wait' or 'Actually')."
+fi
 
 # Never start pi with a model it cannot resolve ("Model local/<id> not found").
 # scripts/resolve-model.mjs asks the local server what it serves when no mounted
@@ -635,6 +641,13 @@ else
     echo "sessions  : not mounted (SESSION_LOG_OUT=0) - codex's own rollout logs die with the container"
   fi
 fi
+# Diff context optimization: default 2 lines instead of standard 3 (HARNESS_DIFF_CONTEXT=3 reverts, 0 disables)
+DIFF_CTX="${HARNESS_DIFF_CONTEXT:-2}"
+if [ "$DIFF_CTX" -gt 0 ] 2>/dev/null; then
+  git -C "$WT" config diff.context "$DIFF_CTX" 2>/dev/null || true
+  args+=(-e "GIT_DIFF_OPTS=-u${DIFF_CTX}")
+fi
+
 if [ "$DRY" -eq 1 ]; then
   echo "(dry-run: worktree not created)"
   printf 'DRY RUN — would exec:\n'; printf '  %q' "${args[@]}"; printf '\n'

@@ -46,6 +46,7 @@ import { join, dirname } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as nodeOs from "node:os";
+import { createConnection } from "node:net";
 import { readChangeConfig } from "../scripts/verify-change.mjs";
 import { decideForChange, logDecision, usageIsOld, loadUsage, loadCatalog } from "../scripts/route-worker.mjs";
 import { superviseChange, pendingDeps, yamlReader, syncWorker, triageMarkdown, latestQualifyTail, eventsFor, writeTriage, buildStatus, writeStatus, digestText, digestDue, phaseOf, DEFAULTS as SUPERVISOR_DEFAULTS, detectLimit, backendOfAgent, recordLimit, loadLimits, pickFallbackBackend, capacity, windowResets, capacityMarkdown, waitOrMove, writeHandoffBrief, paceLevel, detectProviderError, providerErrorPersists, integratorUnresponsive, newestSessionLog, freshOrContinue, sessionHealth } from "../scripts/harness-supervisor.mjs";
@@ -672,6 +673,24 @@ function gatherReviewCounts(trees, changes) {
 const SIDEBAR_REFRESH_MS = 10 * 60 * 1000; // Herdr does not restore tokens after a restart - re-send now and then even if unchanged
 const asciiToken = (v) => String(v ?? "").replace(/[^\x20-\x7E]/g, "").slice(0, 80);
 
+/** Report custom status badge to pane via Herdr socket (llmtrim-herdr pattern; HARNESS_SIDEBAR_BADGES=0 reverts). */
+function reportCustomStatusBadge(paneId, badge) {
+  const socketPath = process.env.HERDR_SOCKET_PATH;
+  if (!socketPath || !badge) return;
+  try {
+    const client = createConnection({ path: socketPath }, () => {
+      const msg = JSON.stringify({
+        id: "badge-" + Date.now(),
+        method: "pane.report_metadata",
+        params: { pane_id: paneId, source: "harness", custom_status: String(badge).slice(0, 30), ttl_ms: 30000 }
+      }) + "\n";
+      client.write(msg);
+      client.end();
+    });
+    client.on("error", () => {});
+  } catch {}
+}
+
 /** Push sidebar tokens to Herdr; skips unchanged values (cached in state.sidebar). Display-only, never fatal. */
 function reportSidebar(repoRoot, { panes, trees, byChange, state, pipeline }) {
   const sessions = gatherSessions(trees);
@@ -697,6 +716,12 @@ function reportSidebar(repoRoot, { panes, trees, byChange, state, pipeline }) {
     const r = herdr(args, { timeoutMs: 5000 });
     if (r.ok) state.sidebar[key] = { hash, at: now };
     else logEvent(repoRoot, `SIDEBAR-FAILED ${key}: ${r.error}`);
+
+    // If enabled, push custom_status badge to the pane via the socket (llmtrim-herdr pattern; HARNESS_SIDEBAR_BADGES=0 reverts)
+    if (kind === "pane" && process.env.HARNESS_SIDEBAR_BADGES !== "0" && pipeline.sidebar?.badges !== false) {
+      const badge = tokens.ctx ? tokens.ctx.replace(/^ctx\s*/, "") : tokens.round ? tokens.round.replace("impl ", "") : "";
+      if (badge) reportCustomStatusBadge(id, badge);
+    }
   };
   try { writeFileSync(join(repoRoot, ".pi-session", "herdr-lifecycle", "sidebar-last.json"), JSON.stringify({ at: new Date().toISOString(), ...sb }, null, 2)); } catch { /* dashboard only */ }
   for (const [id, t] of Object.entries(sb.panes)) send("pane", id, t);
