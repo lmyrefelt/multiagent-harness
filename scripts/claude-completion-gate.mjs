@@ -59,7 +59,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { evaluateCompletionGate } from "./completion-gate-core.mjs";
+import { evaluateCompletionGate, getCounterStatePath, loadAttempts } from "./completion-gate-core.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -115,18 +115,7 @@ export function extractToolResults(lines) {
   return paired;
 }
 
-const counterStatePath = (sessionId) => {
-  const evidence = process.env.CONTRACT_EVIDENCE;
-  const dir = evidence ? dirname(evidence) : ".";
-  return join(dir, `claude-completion-attempts-${sessionId || "default"}.json`);
-};
 
-function loadAttempts(path) {
-  if (existsSync(path)) {
-    try { return JSON.parse(readFileSync(path, "utf8")).attempts ?? 0; } catch { /* fall through */ }
-  }
-  return 0;
-}
 
 async function main() {
   let raw = "";
@@ -148,7 +137,7 @@ async function main() {
     try { lines = readFileSync(envelope.transcript_path, "utf8").split(/\r?\n/); } catch { /* transcript unreadable - toolResults stays [], handled below */ }
     const toolResults = extractToolResults(lines);
 
-    const statePath = counterStatePath(envelope.session_id);
+    const statePath = getCounterStatePath("claude-completion-attempts", envelope.session_id);
     const priorAttempts = loadAttempts(statePath);
 
     const r = evaluateCompletionGate({

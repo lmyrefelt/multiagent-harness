@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 //
 // completion-gate-core — the backend-AGNOSTIC half of the Stop-hook
 // completion gate, shared by claude-completion-gate.mjs and
@@ -117,3 +119,16 @@ function selftest() {
 
 const direct = process.argv[1] && process.argv[1].endsWith("completion-gate-core.mjs");
 if (direct && process.argv.includes("--selftest")) selftest();
+
+export function getCounterStatePath(prefix, id) {
+  const evidence = process.env.CONTRACT_EVIDENCE;
+  const dir = evidence ? dirname(evidence) : ".";
+  return join(dir, `${prefix}-${id || "default"}.json`);
+}
+
+export function loadAttempts(path) {
+  if (existsSync(path)) {
+    try { return JSON.parse(readFileSync(path, "utf8")).attempts ?? 0; } catch { /* fall through */ }
+  }
+  return 0;
+}
