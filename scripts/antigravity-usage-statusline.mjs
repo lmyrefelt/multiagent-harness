@@ -40,6 +40,7 @@
 //   node scripts/antigravity-usage-statusline.mjs --selftest
 //
 import { appendFileSync, readFileSync, unlinkSync } from "node:fs";
+import { readStdin } from "./verify-change.mjs";
 
 // Same log() shape as every other adapter here (t, ev, ...rec).
 function log(rec) {
@@ -85,8 +86,7 @@ export function formatStatusLine(input, snapshot) {
 }
 
 async function main() {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += chunk;
+  const raw = await readStdin();
 
   let input;
   try { input = JSON.parse(raw); } catch { console.log("[antigravity]"); return; } // fail open
