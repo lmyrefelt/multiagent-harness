@@ -545,7 +545,7 @@ async function codexFromCliAuth() {
 }
 // --- Gemini / Antigravity: the same calls the Antigravity CLI makes (as quota-cli does) ---
 // The access token is refreshed IN MEMORY when expired; nothing is written back.
-const AGY_CLIENT = { id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", secret: getSecret("antigravity") ?? null /* the Antigravity CLI's installed-app secret; not shipped here */, base: "https://daily-cloudcode-pa.googleapis.com" };
+const AGY_CLIENT = { id: getSecret("antigravity_client_id") ?? null /* the Antigravity CLI's installed-app client ID; not shipped here */, secret: getSecret("antigravity") ?? null /* the Antigravity CLI's installed-app secret; not shipped here */, base: "https://daily-cloudcode-pa.googleapis.com" };
 /** retrieveUserQuotaSummary -> gemini_5h / gemini_weekly / agy3p_5h / agy3p_weekly (remainingFraction -> used %). Pure. */
 export function antigravityQuotas(j, t = Date.now()) {
 	const buckets = (j?.groups ?? []).flatMap((g) => g.buckets ?? []);
@@ -602,6 +602,7 @@ async function postJson(url, token, body, ms = 8000) {
 async function antigravityFromLogin(repoRoot = null) {
 	const c = antigravityCreds(repoRoot);
 	if (!c) return { error: "no Antigravity login on this Mac (keychain 'gemini'/'antigravity' or ~/.gemini/oauth_creds.json)" };
+	if (!AGY_CLIENT.id) return { error: "Antigravity client ID not configured - set ANTIGRAVITY_OAUTH_CLIENT_ID" };
 	if (c.client && c.client !== AGY_CLIENT.id) return { error: `login belongs to another Google client (${String(c.client).slice(0, 12)}...) - not Antigravity` };
 	let token = c.access;
 	if (c.expires && c.expires < Date.now() + 60e3) {
