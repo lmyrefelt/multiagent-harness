@@ -115,6 +115,22 @@ function selftest() {
 	ok(a2.antigravity.turns === 3, "accumulates turns (2 + 1)");
 	ok(a2["?"].fresh === 10, "adds new model to existing object");
 
+	// Test continue branches & cross-call isolation
+	const L3 = [
+		"irrelevant log line that doesnt match regex",
+		JSON.stringify({ type: "PLANNER_RESPONSE", input_tokens: null }), // matches regex but usageOf returns null
+		JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-opus-5-5", usage: { input_tokens: 10, cache_read_input_tokens: 990, cache_creation_input_tokens: 50 } } }), // deduplication check across calls
+		JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 20 } } } }), // uses default 'codex' model
+		JSON.stringify({ type: "turn_context", payload: { model: "gpt-4" } }),
+		JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 200, cached_input_tokens: 50 } } } }), // uses 'gpt-4' model
+	];
+	const a3 = aggregate(L3);
+	ok(a3["anthropic/claude-opus-5-5"].turns === 1, "deduplication (m1) resets across aggregate calls");
+	ok(!a3.antigravity, "PLANNER_RESPONSE with null tokens skipped");
+	ok(a3.codex.fresh === 80, "codexModel defaults to 'codex' in new call");
+	ok(a3["codex/gpt-4"].fresh === 150, "codexModel updates correctly");
+	ok(Object.keys(a3).length === 3, "irrelevant lines are correctly skipped");
+
 	if (fails) { console.error(`${fails} cache-stats self-test(s) FAILED`); return 1; }
 	console.log("cache-stats self-test: all passed");
 	return 0;
