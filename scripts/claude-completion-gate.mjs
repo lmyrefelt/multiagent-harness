@@ -214,6 +214,20 @@ function selftest() {
   ];
   ok(extractToolResults(orphanResult).length === 0, "a tool_result with no matching tool_use is dropped, not force-paired with garbage");
 
+  const edgeCasesTranscript = [
+    "   ",
+    JSON.stringify({ message: { content: [null, "string-block"] } }),
+    JSON.stringify({ message: { content: [{ type: "tool_use", name: "OtherTool", input: { key: "val" } }] } }), // missing id
+    JSON.stringify({ message: { content: [{ type: "tool_use", id: "t2", name: "OtherTool", input: { key: "val" } }] } }),
+    JSON.stringify({ message: { content: [{ type: "tool_result", tool_use_id: "t2", content: "raw string result", is_error: true }] } }),
+    JSON.stringify({ message: { content: [{ type: "tool_use", id: "t3", name: "Bash" }] } }), // missing input
+    JSON.stringify({ message: { content: [{ type: "tool_result", tool_use_id: "t3", content: [{ type: "text" }, { type: "text", text: "part2" }] }] } }) // missing text
+  ].join("\n");
+  const advPaired = extractToolResults(edgeCasesTranscript.split("\n"));
+  ok(advPaired.length === 2, "handles non-Bash tools, errors, missing inputs, and string contents correctly");
+  ok(advPaired[0].command === '{"key":"val"}' && advPaired[0].output === "raw string result" && advPaired[0].isError === true, "non-bash JSON serializes input, reads string result, parses is_error");
+  ok(advPaired[1].command === "" && advPaired[1].output === "\npart2" && advPaired[1].isError === false, "handles missing Bash input and concatenates array contents skipping missing texts");
+
   // evaluateCompletionGate itself is tested exhaustively in
   // completion-gate-core.mjs's own selftest (shared by codex-completion-gate.mjs
   // too) - this is just confirming the import wires through correctly, using
