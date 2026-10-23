@@ -22,11 +22,10 @@
 //
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { execSync } from "node:child_process";
-import { readChangeConfig, readHandover, checkHandover } from "./verify-change.mjs";
+import { readChangeConfig, readHandover, checkHandover, sh } from "./verify-change.mjs";
 
 const NL = String.fromCharCode(10);
-const sh = (c) => execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
 
 /**
  * Resolve a worktree's `.git` pointer file to the gitdir it claims, relative

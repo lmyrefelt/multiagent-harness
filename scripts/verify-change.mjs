@@ -402,7 +402,7 @@ export function readEvidenceRecords(root, listFn = readdirSync, readFn = readFil
   return out;
 }
 
-const sh = (c) => execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+export const sh = (c) => execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 function fail(msg) { console.error(NL + "  CHANGE NOT VERIFIED" + NL); console.error(msg.replace(/^/gm, "  ")); console.error(""); process.exit(1); }
 function okExit(msg) { console.log("  verify-change: " + msg); process.exit(0); }
 
