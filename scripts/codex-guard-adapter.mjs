@@ -96,7 +96,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { loadCounters, counterStatePath } from "./verify-change.mjs";
+import { loadCounters, counterStatePath, shouldLogHardStop } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 const UNPARSEABLE_PATCH_PATH = "__codex_adapter_unparseable_patch__";
@@ -165,17 +165,6 @@ export function toCanonicalEvents(toolName, toolInput) {
       // fired.
       return [{ toolName, input: a }];
   }
-}
-
-/**
- * True exactly on the call where counters.stopped FLIPS from false to true -
- * not on every subsequent call while it stays true. Same function as
- * claude-guard-adapter.mjs's own (duplicated, not shared, matching this
- * project's existing convention for small per-adapter utilities like log()
- * itself - each adapter file stays readable standalone).
- */
-export function shouldLogHardStop(wasStopped, counters) {
-  return !wasStopped && !!counters?.stopped;
 }
 
 /**
@@ -389,12 +378,6 @@ function selftest() {
     ok(!threw, "log() with CONTRACT_EVIDENCE unset does not throw");
     if (prevPath !== undefined) process.env.CONTRACT_EVIDENCE = prevPath;
   }
-
-  // shouldLogHardStop - edge detection, same semantics as claude-guard-adapter.mjs's
-  ok(shouldLogHardStop(false, { stopped: true }) === true, "flips false->true -> log it");
-  ok(shouldLogHardStop(true, { stopped: true }) === false, "REGRESSION: already true before this call -> do NOT re-log on every subsequent call while a hard stop stays engaged");
-  ok(shouldLogHardStop(false, { stopped: false }) === false, "never engaged -> never logs");
-  ok(shouldLogHardStop(false, {}) === false, "counters missing the field entirely -> falsy, not a crash");
 
   if (fails) { console.error("\n" + fails + " self-test(s) FAILED"); process.exit(1); }
   console.log("codex-guard-adapter self-test: all passed");
