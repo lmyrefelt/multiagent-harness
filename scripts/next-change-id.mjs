@@ -55,26 +55,45 @@ async function usedIds(root) {
   // local + the standard refs are enough here and need no network.
   const branches = execSync("git branch --format='%(refname:short)'", { encoding: "utf8" });
 
-  const lines = branches.split(/\r?\n/);
-  // Concurrency limit chunking to avoid spawning too many processes at once
-  const CONCURRENCY_LIMIT = 50;
-  for (let i = 0; i < lines.length; i += CONCURRENCY_LIMIT) {
-    const chunk = lines.slice(i, i + CONCURRENCY_LIMIT);
-    await Promise.all(chunk.map(async (line) => {
-      const branchName = line.trim();
-      if (!branchName) return;
-      const m = branchName.match(/^feature\/CHANGE-0*(\d+)\b/i);
-      if (m) used.add(Number(m[1]));
-      // Also scan docs/changes inside each branch (e.g. planning/* branches)
-      try {
-        const { stdout: tree } = await execAsync(`git ls-tree -d --name-only "${branchName}":docs/changes`);
-        for (const entry of tree.split(/\r?\n/)) {
-          const em = entry.match(/^CHANGE-0*(\d+)\b/i);
-          if (em) used.add(Number(em[1]));
-        }
-      } catch { /* branch may not have docs/changes yet */ }
-    }));
+  const lines = branches.split(/\r?\n/).map(b => b.trim()).filter(Boolean);
+
+  // Extract branch numbers
+  for (const branchName of lines) {
+    const m = branchName.match(/^feature\/CHANGE-0*(\d+)\b/i);
+    if (m) used.add(Number(m[1]));
   }
+
+  // Also scan docs/changes inside each branch (e.g. planning/* branches)
+  // We optimize this by doing a single batch operation to find all unique trees
+  const input = lines.map(b => `${b}:docs/changes`).join('\n') + '\n';
+  if (!input.trim()) return used;
+
+  try {
+    const batchCheckOutput = execSync(`git cat-file --batch-check="%(objectname) %(objecttype)"`, {
+      input,
+      encoding: "utf8"
+    });
+
+    const uniqueTrees = new Set();
+    for (const line of batchCheckOutput.split(/\r?\n/)) {
+      const parts = line.split(" ");
+      if (parts.length === 2 && parts[1] === "tree") {
+        uniqueTrees.add(parts[0]);
+      }
+    }
+
+    for (const treeHash of uniqueTrees) {
+      const treeOut = execSync(`git ls-tree -d --name-only ${treeHash}`, { encoding: "utf8" });
+      for (const entry of treeOut.split(/\r?\n/)) {
+        const em = entry.match(/^CHANGE-0*(\d+)\b/i);
+        if (em) used.add(Number(em[1]));
+      }
+    }
+  } catch {
+    // If git cat-file fails, we ignore since the repository might be in a weird state
+    // or batch-check had issues, but normally this shouldn't fail.
+  }
+
   return used;
 }
 
