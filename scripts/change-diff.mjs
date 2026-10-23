@@ -19,8 +19,7 @@
 //
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
-import { readHandover, readChangeConfig, findChangeDir } from "./verify-change.mjs";
+import { readHandover, readChangeConfig, findChangeDir, sh } from "./verify-change.mjs";
 
 /** Which ref to diff FROM, and why - the only logic this script adds on top of verify-change.mjs's readers. */
 export function pickFromRef(handover, baseBranch) {
@@ -31,7 +30,7 @@ export function pickFromRef(handover, baseBranch) {
   return { from: base, why: `no handover yet - since branched from ${base}` };
 }
 
-const sh = (c) => execSync(c, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
 
 function main() {
   const args = process.argv.slice(2);
