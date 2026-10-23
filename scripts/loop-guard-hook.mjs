@@ -148,6 +148,10 @@ const rank = (l) => ({ none: 0, nudge: 1, restrict: 2, handoff: 3 }[l] ?? 0);
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+	if (process.argv.includes("--selftest")) {
+		selftest();
+		process.exit(0);
+	}
 	const backend = process.argv[2] === "claude" ? "claude" : "codex";
 	let raw = "";
 	try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
@@ -158,4 +162,57 @@ if (isMain) {
 		log({ ev: "loop_guard_error", backend, err: String(e?.message ?? e) });
 	}
 	process.exit(0);
+}
+
+function selftest() {
+	let fails = 0;
+	const ok = (c, m) => { if (!c) { fails++; console.error("FAIL " + m); } };
+
+	// Test statePath
+	const oldEv = process.env.CONTRACT_EVIDENCE;
+	process.env.CONTRACT_EVIDENCE = "/tmp/ev";
+	ok(statePath("foo/bar") === "/tmp/ev.loop-foo_bar.json", "statePath uses CONTRACT_EVIDENCE and sanitizes");
+	delete process.env.CONTRACT_EVIDENCE;
+	ok(statePath("a b") === "/tmp/loop-guard-a_b.json", "statePath falls back to /tmp");
+	if (oldEv) process.env.CONTRACT_EVIDENCE = oldEv;
+
+	// Mock core
+	const core = {
+		parseExitCode: (out) => (out.includes("exit 1") ? 1 : (out.includes("exit 0") ? 0 : null)),
+		isTestCommand: (cmd) => cmd.includes("npm test"),
+		patchPaths: (cmd) => ["file1.txt", "file2.txt"]
+	};
+
+	// Test toLoopEvents
+	// 1. Shell success
+	let evs = toLoopEvents(core, "claude", {
+		tool_name: "Bash",
+		tool_input: { command: "echo hi && npm test" },
+		tool_response: { stdout: "hi\nexit 0" }
+	}, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "shell" && evs[0].command === "echo hi && npm test" && evs[0].exitCode === 0 && evs[0].isTest === true && evs[0].failed === undefined, "shell success event");
+
+	// 2. Shell failure (PostToolUseFailure)
+	evs = toLoopEvents(core, "claude", {
+		tool_name: "unified_exec",
+		hook_event_name: "PostToolUseFailure",
+		error: "timeout"
+	}, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "shell" && evs[0].output === "timeout" && evs[0].exitCode === null && evs[0].failed === true, "shell failure event");
+
+	// 3. Edit (codex)
+	evs = toLoopEvents(core, "codex", {
+		tool_name: "apply_patch",
+		tool_input: { command: "patch stuff" }
+	}, "/repo");
+	ok(evs.length === 2 && evs[0].kind === "edit" && evs[0].path === "file1.txt", "codex apply_patch");
+
+	// 4. Edit (Write)
+	evs = toLoopEvents(core, "claude", {
+		tool_name: "Write",
+		tool_input: { file_path: "/repo/src/main.js" }
+    }, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "edit" && evs[0].path === "src/main.js", "write absolute path resolved to relative");
+
+	if (fails > 0) process.exit(1);
 }
