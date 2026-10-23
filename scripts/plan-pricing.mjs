@@ -176,6 +176,26 @@ async function main() {
 function selftest() {
 	let fails = 0;
 	const ok = (c, m) => { if (!c) { fails++; console.error("FAIL " + m); } };
+	const testCompact = compactRows([
+		{ id: "1", model: "model-1", unmetered: "True", promo_until: "2025-01-01", price_usd: "20", real_usd_per_mtok: "0.1", aa_coding_agent_index__score: "50", aa_coding_agent_index__variant: "v1", aa_coding_agent_index__score_is_estimated: "true", monthly_yi: "1.5" },
+		{ id: "2" }, // Missing model, should be filtered out
+		{ id: "3", model: "model-3", unmetered: "true" }, // unmetered true, promo_until null
+		{ id: "4", model: "model-4", unmetered: "false", aa_coding_agent_index__score: "invalid" }, // Invalid score
+		{ id: "5", model: "model-5", unmetered: "False" } // unmetered False
+	]);
+	ok(testCompact.length === 4, "compactRows filters records without model");
+	ok(testCompact[0].unmetered_until === "2025-01-01", "compactRows extracts unmetered_until from promo_until when unmetered is True");
+	ok(testCompact[1].unmetered_until === "promo", "compactRows defaults unmetered_until to promo when unmetered is true and promo_until is not set");
+	ok(testCompact[2].unmetered_until === null, "compactRows returns null unmetered_until when unmetered is false");
+	ok(testCompact[3].unmetered_until === null, "compactRows returns null unmetered_until when unmetered is False");
+	ok(testCompact[0].scores.aa_coding_agent_index.score === 50, "compactRows extracts scores correctly");
+	ok(testCompact[0].scores.aa_coding_agent_index.variant === "v1", "compactRows extracts variant correctly");
+	ok(testCompact[0].scores.aa_coding_agent_index.estimated === true, "compactRows extracts score_is_estimated correctly");
+	ok(testCompact[0].fee_usd === 20, "compactRows extracts fee_usd correctly");
+	ok(testCompact[0].real_usd_per_mtok === 0.1, "compactRows extracts real_usd_per_mtok correctly");
+	ok(testCompact[0].monthly_tokens === 150000000, "compactRows extracts and converts monthly_yi correctly");
+	ok(testCompact[2].scores.aa_coding_agent_index === undefined, "compactRows skips invalid scores");
+
 	const csv = '﻿id,plan,billing,model,model_display,price_usd,monthly_yi,real_usd_per_mtok,confidence,data_date,unmetered,promo_until,aa_coding_agent_index__score,aa_coding_agent_index__variant,open_design_arena__score,list_price\n'
 		+ 'chatgpt_plus::gpt-6.1-sol,ChatGPT Plus,subscription,gpt-6.1-sol,GPT-6.1 Sol,20.0,8.7,0.023,high,2026-10-10,False,,62.9078,xhigh,90.1,\n'
 		+ 'chatgpt_plus::gpt-6-astra,ChatGPT Plus,subscription,gpt-6-astra,GPT-6 Astra,20.0,1.59,0.126,high,2026-10-12,False,,61.645,,82.7,"{\'cached\': 1.0, ""x"": 2}"\n'
