@@ -201,11 +201,40 @@ function selftest() {
     JSON.stringify({ message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "5 passed in 0.4s" }], is_error: false }] } }),
     "not json at all, must be skipped not thrown",
     JSON.stringify({ message: { content: "not an array, must be skipped" } }),
+    JSON.stringify({ message: { content: [
+      { type: "tool_use", id: "t2", name: "Python", input: { code: "print('hello')" } },
+      { type: "tool_result", tool_use_id: "t2", content: "hello\n", is_error: false }
+    ] } }),
+    JSON.stringify({ message: { content: [
+      { type: "tool_use", id: "t3", name: "Bash" },
+      { type: "tool_result", tool_use_id: "t3", content: "error output", is_error: true }
+    ] } }),
+    JSON.stringify({ message: { content: [
+      { type: "tool_use", id: "t4", name: "OtherTool" },
+      { type: "tool_result", tool_use_id: "t4", content: [{ type: "text", text: "done" }], is_error: false },
+      null,
+      "invalid string element",
+      123
+    ] } })
   ].join("\n");
   const paired = extractToolResults(fakeTranscript.split("\n"));
-  ok(paired.length === 1, "one tool_use + its matching tool_result pairs into one entry");
+  ok(paired.length === 4, "all valid tool_use + tool_result pairs are extracted, skipping invalid elements");
+
+  // Bash tool (t1)
   ok(paired[0].command === "uv run pytest -q" && paired[0].output === "5 passed in 0.4s" && paired[0].isError === false,
     "paired entry carries command/output/isError in testsRanAndPassed's expected shape");
+
+  // Non-Bash tool (t2) tests stringified input and string content in tool_result
+  ok(paired[1].command === '{"code":"print(\'hello\')"}' && paired[1].output === "hello\n" && paired[1].isError === false,
+    "non-Bash tool input is stringified to JSON; string content is handled correctly");
+
+  // Bash tool missing input (t3) and is_error: true
+  ok(paired[2].command === "" && paired[2].output === "error output" && paired[2].isError === true,
+    "Bash tool missing input defaults to empty string; is_error: true is captured");
+
+  // Non-Bash tool missing input (t4) and invalid elements in array
+  ok(paired[3].command === "{}" && paired[3].output === "done" && paired[3].isError === false,
+    "non-Bash tool missing input defaults to {}; invalid message.content array elements are skipped safely");
 
   ok(extractToolResults(["garbage", "{}", ""]).length === 0, "no recognisable tool_use/tool_result anywhere -> empty, not a crash");
 
