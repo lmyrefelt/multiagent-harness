@@ -376,6 +376,14 @@ export function loadCounters(path, newCounters) {
   return newCounters();
 }
 
+/**
+ * True exactly on the call where counters.stopped FLIPS from false to true -
+ * not on every subsequent call while it stays true.
+ */
+export function shouldLogHardStop(wasStopped, counters) {
+  return !wasStopped && !!counters?.stopped;
+}
+
 export function counterStatePath(prefix, id) {
   const evidence = process.env.CONTRACT_EVIDENCE;
   const dir = evidence ? dirname(evidence) : ".";
@@ -745,6 +753,13 @@ function selftest() {
     const recs = readEvidenceRecords("/fake/root", () => [], () => "", () => false);
     ok(recs.length === 0, "readEvidenceRecords returns [] when .pi-session doesn't exist");
   }
+
+  // shouldLogHardStop - edge detection
+  ok(shouldLogHardStop(false, { stopped: true }) === true, "flips false->true -> log it");
+  ok(shouldLogHardStop(true, { stopped: true }) === false, "REGRESSION: already true before this call -> do NOT re-log on every subsequent call while a hard stop stays engaged");
+  ok(shouldLogHardStop(false, { stopped: false }) === false, "never engaged -> never logs");
+  ok(shouldLogHardStop(true, { stopped: false }) === false, "was true, now false - should not happen in practice (stopped never resets), but must not crash or mis-log if it somehow did");
+  ok(shouldLogHardStop(false, {}) === false, "counters missing the field entirely -> falsy, not a crash");
 
   if (fails) { console.error(NL + fails + " self-test(s) FAILED"); process.exit(1); }
   console.log("verify-change self-test: all passed");

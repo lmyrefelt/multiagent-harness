@@ -57,7 +57,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { loadCounters, counterStatePath } from "./verify-change.mjs";
+import { loadCounters, counterStatePath, shouldLogHardStop } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -114,19 +114,6 @@ export function toCanonicalEvent(toolName, toolInput) {
       // fired.
       return { toolName, input: a };
   }
-}
-
-/**
- * True exactly on the call where counters.stopped FLIPS from false to true -
- * not on every subsequent call while it stays true. counters.stopped is set
- * internally by checks.mjs's evaluateDuring (checks.mjs:846, the moment
- * `terminate` fires) and PERSISTS across this adapter's many separate-process
- * invocations within one session (same counter-state-file mechanism as
- * tool_call_limit), so without edge-detection every tool call AFTER the hard
- * stop would re-log the same event.
- */
-export function shouldLogHardStop(wasStopped, counters) {
-  return !wasStopped && !!counters?.stopped;
 }
 
 /** checks.mjs's block/allow -> Claude Code's PreToolUse decision schema. */
@@ -273,13 +260,6 @@ function selftest() {
     ok(!threw, "log() with CONTRACT_EVIDENCE unset does not throw");
     if (prevPath !== undefined) process.env.CONTRACT_EVIDENCE = prevPath;
   }
-
-  // shouldLogHardStop - edge detection, the whole point of this function
-  ok(shouldLogHardStop(false, { stopped: true }) === true, "flips false->true -> log it");
-  ok(shouldLogHardStop(true, { stopped: true }) === false, "REGRESSION: already true before this call -> do NOT re-log on every subsequent call while a hard stop stays engaged");
-  ok(shouldLogHardStop(false, { stopped: false }) === false, "never engaged -> never logs");
-  ok(shouldLogHardStop(true, { stopped: false }) === false, "was true, now false - should not happen in practice (stopped never resets), but must not crash or mis-log if it somehow did");
-  ok(shouldLogHardStop(false, {}) === false, "counters missing the field entirely -> falsy, not a crash");
 
   if (fails) { console.error("\n" + fails + " self-test(s) FAILED"); process.exit(1); }
   console.log("claude-guard-adapter self-test: all passed");
