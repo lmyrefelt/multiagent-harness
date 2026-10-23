@@ -85,6 +85,29 @@ function main() {
 function selftest() {
 	let fails = 0;
 	const ok = (c, m) => { if (!c) { fails++; console.error("FAIL " + m); } };
+
+	const usageTests = [
+		// pi
+		[{ message: { role: "assistant", provider: "openai", model: "gpt-4", usage: { input: 10, cacheRead: 5, cacheWrite: 2 } } }, { model: "openai/gpt-4", fresh: 10, cached: 5, written: 2, key: null }, "usageOf: pi with provider and model"],
+		[{ message: { role: "assistant", model: "gpt-4", usage: { input: 10, cacheRead: 5, cacheWrite: 2 } } }, { model: "gpt-4", fresh: 10, cached: 5, written: 2, key: null }, "usageOf: pi without provider"],
+		[{ message: { role: "assistant", usage: { input: 5 } } }, { model: "?", fresh: 5, cached: 0, written: 0, key: null }, "usageOf: pi without provider and model"],
+		// Claude Code
+		[{ type: "assistant", message: { id: "msg1", model: "claude-3", usage: { input_tokens: 20, cache_read_input_tokens: 15, cache_creation_input_tokens: 5 } } }, { model: "anthropic/claude-3", fresh: 20, cached: 15, written: 5, key: "msg1" }, "usageOf: Claude Code with model and id"],
+		[{ type: "assistant", requestId: "req1", message: { usage: { input_tokens: 5 } } }, { model: "anthropic/?", fresh: 5, cached: 0, written: 0, key: "req1" }, "usageOf: Claude Code with requestId and no model"],
+		// Codex
+		[{ payload: { type: "token_count", info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 40 } } } }, { model: "codex", fresh: 60, cached: 40, written: 0, key: null }, "usageOf: Codex token_count"],
+		[{ type: "turn_context", payload: { model: "gpt-4o" } }, { model: "codex/gpt-4o", setModel: true }, "usageOf: Codex turn_context"],
+		// Antigravity
+		[{ type: "PLANNER_RESPONSE", input_tokens: 150, cache_read_tokens: 50 }, { model: "antigravity", fresh: 100, cached: 50, written: 0, key: null }, "usageOf: Antigravity PLANNER_RESPONSE"],
+		// Non-matching
+		[{ type: "unknown" }, null, "usageOf: unknown type returns null"],
+		[{}, null, "usageOf: empty object returns null"]
+	];
+	for (const [input, expected, msg] of usageTests) {
+		const result = usageOf(input);
+		ok(JSON.stringify(result) === JSON.stringify(expected), msg);
+	}
+
 	const L = [
 		JSON.stringify({ type: "message", message: { role: "assistant", provider: "opencode", model: "x", usage: { input: 100, cacheRead: 900, cacheWrite: 0 } } }),
 		JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-opus-5-5", usage: { input_tokens: 10, cache_read_input_tokens: 990, cache_creation_input_tokens: 50 } } }),
