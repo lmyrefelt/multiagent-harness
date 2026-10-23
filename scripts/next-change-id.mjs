@@ -27,9 +27,10 @@
  */
 
 import { execSync, exec } from "node:child_process";
-import { readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readdirSync, existsSync, mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 
 const execAsync = promisify(exec);
 
@@ -107,8 +108,13 @@ function nextId(used) {
 const pad = (n) => "CHANGE-" + String(n).padStart(4, "0");
 
 async function main() {
-  const root = repoRoot();
   const args = process.argv.slice(2);
+  if (args.includes("--selftest")) {
+    const code = await selftest();
+    process.exit(code);
+  }
+
+  const root = repoRoot();
   const used = await usedIds(root);
   const n = nextId(used);
   const id = pad(n);
@@ -163,6 +169,70 @@ async function main() {
 
   console.log(id);
   console.log(`docs/changes/${dirName}/`);
+}
+
+async function selftest() {
+  let fails = 0;
+  const ok = (c, m) => { if (!c) { fails++; console.error("FAIL " + m); } };
+
+  const tmp = mkdtempSync(join(tmpdir(), "next-change-id-test-"));
+  const originalCwd = process.cwd();
+  try {
+    process.chdir(tmp);
+
+    // Set up mock repository
+    execSync("git init --initial-branch=master", { stdio: "ignore" });
+    execSync("git config user.name 'Test'", { stdio: "ignore" });
+    execSync("git config user.email 'test@example.com'", { stdio: "ignore" });
+    execSync("git commit --allow-empty -m 'init'", { stdio: "ignore" });
+
+    // Mock 1: Folders
+    const docsChanges = join(tmp, "docs", "changes");
+    mkdirSync(join(docsChanges, "CHANGE-0005-foo"), { recursive: true });
+    mkdirSync(join(docsChanges, "CHANGE-0006-bar"), { recursive: true });
+
+    // Mock 2: Branches
+    execSync("git branch feature/CHANGE-0008-something", { stdio: "ignore" });
+    execSync("git branch feature/CHANGE-0010-other", { stdio: "ignore" });
+
+    // Mock 3: ls-tree in a branch
+    execSync("git checkout -b with-docs", { stdio: "ignore" });
+    mkdirSync(join(docsChanges, "CHANGE-0012-baz"), { recursive: true });
+    writeFileSync(join(docsChanges, "CHANGE-0012-baz", "change.yaml"), "id: CHANGE-0012");
+    execSync("git add docs", { stdio: "ignore" });
+    execSync("git commit -m 'add 12'", { stdio: "ignore" });
+    execSync("git checkout master", { stdio: "ignore" });
+
+    // Test usedIds
+    const used = await usedIds(tmp);
+
+    ok(used.size === 5, `Expected 5 used ids, got ${used.size}`);
+    ok(used.has(5), "Detects id from folder (5)");
+    ok(used.has(6), "Detects id from folder (6)");
+    ok(used.has(8), "Detects id from branch name (8)");
+    ok(used.has(10), "Detects id from branch name (10)");
+    ok(used.has(12), "Detects id from ls-tree in branch (12)");
+
+    // Test nextId
+    const nId = nextId(used);
+    ok(nId === 13, `Expected nextId to be 13, got ${nId}`);
+
+    // Test nextId with empty used
+    const emptyUsed = new Set();
+    const emptyNext = nextId(emptyUsed);
+    ok(emptyNext === 1, `Expected empty nextId to be 1, got ${emptyNext}`);
+
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+
+  if (fails) {
+    console.error(`${fails} selftest(s) FAILED`);
+    return 1;
+  }
+  console.log("next-change-id selftest: all passed");
+  return 0;
 }
 
 main().catch((err) => {
