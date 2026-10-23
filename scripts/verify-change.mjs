@@ -369,6 +369,12 @@ export function findChangeDir(root, num) {
  * records' own timestamps can. Malformed lines are skipped, not fatal — a
  * crashed write mid-line must not take down an otherwise-good check.
  */
+export async function readStdin() {
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  return raw;
+}
+
 export function loadCounters(path, newCounters) {
   if (existsSync(path)) {
     try { return JSON.parse(readFileSync(path, "utf8")); } catch { /* fall through to fresh */ }

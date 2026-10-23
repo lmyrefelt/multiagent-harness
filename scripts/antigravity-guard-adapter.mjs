@@ -51,7 +51,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { loadCounters, counterStatePath } from "./verify-change.mjs";
+import { loadCounters, counterStatePath, readStdin } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -123,8 +123,7 @@ export function shouldLogHardStop(wasStopped, counters) {
 }
 
 async function main() {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += chunk;
+  const raw = await readStdin();
 
   let envelope;
   try { envelope = JSON.parse(raw); }

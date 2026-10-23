@@ -66,7 +66,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { evaluateCompletionGate, loadAttempts } from "./completion-gate-core.mjs";
-import { counterStatePath } from "./verify-change.mjs";
+import { counterStatePath, readStdin } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -122,8 +122,7 @@ export function extractAntigravityTranscript(lines) {
 }
 
 async function main() {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += chunk;
+  const raw = await readStdin();
 
   let envelope;
   try { envelope = JSON.parse(raw); } catch { return done({ decision: "allow" }); } // fail open - see header
