@@ -148,6 +148,9 @@ const rank = (l) => ({ none: 0, nudge: 1, restrict: 2, handoff: 3 }[l] ?? 0);
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
+	if (process.argv.includes("--selftest")) {
+		process.exit(selftest());
+	}
 	const backend = process.argv[2] === "claude" ? "claude" : "codex";
 	let raw = "";
 	try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
@@ -158,4 +161,93 @@ if (isMain) {
 		log({ ev: "loop_guard_error", backend, err: String(e?.message ?? e) });
 	}
 	process.exit(0);
+}
+
+function selftest() {
+	let fails = 0;
+	const ok = (c, m) => { if (!c) { fails++; console.error("FAIL " + m); } };
+
+	const savedEv = process.env.CONTRACT_EVIDENCE;
+
+	try {
+		delete process.env.CONTRACT_EVIDENCE;
+		ok(statePath("test-session") === "/tmp/loop-guard-test-session.json", "statePath falls back to /tmp");
+		ok(statePath("bad/name:1") === "/tmp/loop-guard-bad_name_1.json", "statePath sanitizes session ID");
+
+		process.env.CONTRACT_EVIDENCE = "/var/log/evidence.log";
+		ok(statePath("foo") === "/var/log/evidence.log.loop-foo.json", "statePath uses CONTRACT_EVIDENCE");
+	} finally {
+		if (savedEv === undefined) delete process.env.CONTRACT_EVIDENCE;
+		else process.env.CONTRACT_EVIDENCE = savedEv;
+	}
+
+	const core = {
+		parseExitCode: (out) => (out.includes("exit 1") ? 1 : 0),
+		isTestCommand: (cmd) => cmd.includes("npm test"),
+		patchPaths: (cmd) => {
+			if (cmd.includes("bar.txt")) return ["/repo/foo/bar.txt"];
+			return [];
+		},
+		sha: (buf) => "mock-sha-" + buf.length
+	};
+
+	// Mock fileHash implicitly by testing paths that don't trigger readFileSync throws (or let them catch and return null)
+	// We'll test with non-existent files which naturally return null via the try/catch in fileHash.
+
+	// Test Bash tools
+	const bashEnv = {
+		tool_name: "Bash",
+		tool_input: { command: "ls -la" },
+		tool_response: { stdout: "files", stderr: "", exit_code: 0 }
+	};
+	const bashEvents = toLoopEvents(core, "claude", bashEnv, "/repo");
+	ok(bashEvents.length === 1 && bashEvents[0].kind === "shell", "toLoopEvents maps Bash to shell");
+	ok(bashEvents[0].command === "ls -la", "extracts command");
+	ok(bashEvents[0].output.includes("files"), "textOf flattens output object");
+	ok(bashEvents[0].exitCode === 0, "parses exit code");
+	ok(bashEvents[0].isTest === false, "checks isTestCommand");
+
+	const failEnv = {
+		hook_event_name: "PostToolUseFailure",
+		tool_name: "unified_exec",
+		tool_input: { command: "npm test" },
+		error: "Process exited with code 1\nexit 1"
+	};
+	const failEvents = toLoopEvents(core, "codex", failEnv, "/repo");
+	ok(failEvents[0].failed === true, "PostToolUseFailure sets failed: true");
+	ok(failEvents[0].exitCode === null, "PostToolUseFailure ignores parseExitCode");
+	ok(failEvents[0].isTest === true, "identifies test commands");
+
+	// Test Codex patches
+	const patchEnv = {
+		tool_name: "apply_patch",
+		tool_input: { command: "patch for bar.txt" }
+	};
+	const patchEvents = toLoopEvents(core, "codex", patchEnv, "/repo");
+	ok(patchEvents.length === 1 && patchEvents[0].kind === "edit", "maps apply_patch to edit");
+	ok(patchEvents[0].path === "foo/bar.txt", "makes path relative to repoRoot");
+	ok(patchEvents[0].contentHash === null, "fileHash handles missing files gracefully (returns null)");
+
+	// Test Claude files
+	const editEnv = {
+		tool_name: "Edit",
+		tool_input: { file_path: "/repo/src/main.js" }
+	};
+	const editEvents = toLoopEvents(core, "claude", editEnv, "/repo");
+	ok(editEvents.length === 1 && editEvents[0].kind === "edit", "maps Edit to edit");
+	ok(editEvents[0].path === "src/main.js", "strips absolute path based on repoRoot");
+
+	const notebookEnv = {
+		tool_name: "NotebookEdit",
+		tool_input: { notebook_path: "notebooks/data.ipynb" }
+	};
+	const notebookEvents = toLoopEvents(core, "claude", notebookEnv, "/repo");
+	ok(notebookEvents[0].path === "notebooks/data.ipynb", "handles notebook_path");
+
+	const unknownEnv = { tool_name: "SomeUnknownTool" };
+	ok(toLoopEvents(core, "claude", unknownEnv, "/repo").length === 0, "unknown tools return empty events");
+
+	if (fails) { console.error(`${fails} loop-guard-hook self-test(s) FAILED`); return 1; }
+	console.log("loop-guard-hook self-test: all passed");
+	return 0;
 }
