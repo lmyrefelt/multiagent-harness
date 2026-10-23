@@ -22,8 +22,8 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const NAMES = ["openai", "openai_metrics", "aistudio", "vertex", "opencode", "openrouter", "jules", "antigravity"];
-const ENV_ALIASES = { openai: ["OPENAI_API_KEY"], openai_metrics: ["OPENAI_ADMIN_KEY"], aistudio: ["GEMINI_FREE_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"], vertex: ["VERTEX_API_KEY"], opencode: ["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"], openrouter: ["OPENROUTER_API_KEY"], jules: ["JULES_API_KEY"], antigravity: ["ANTIGRAVITY_OAUTH_CLIENT_SECRET"] };
+export const NAMES = ["openai", "openai_metrics", "aistudio", "vertex", "opencode", "openrouter", "jules", "antigravity", "antigravity_client_id"];
+const ENV_ALIASES = { openai: ["OPENAI_API_KEY"], openai_metrics: ["OPENAI_ADMIN_KEY"], aistudio: ["GEMINI_FREE_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"], vertex: ["VERTEX_API_KEY"], opencode: ["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"], openrouter: ["OPENROUTER_API_KEY"], jules: ["JULES_API_KEY"], antigravity: ["ANTIGRAVITY_OAUTH_CLIENT_SECRET"], antigravity_client_id: ["ANTIGRAVITY_OAUTH_CLIENT_ID"] };
 const cache = new Map();
 
 function fromFile(name) {
