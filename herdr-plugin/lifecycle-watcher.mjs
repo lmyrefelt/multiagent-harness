@@ -495,6 +495,7 @@ export function computeSidebar({ panes, byChange, state = {}, pipeline, sessions
       const block = usageBlock(usage, now);
       for (let i = 1; i <= 5; i++) out.workspaces[home][`usage_${i}`] = block[`usage_${i}`] ?? "";
       out.workspaces[home].usage_hdr = block.usage_hdr ?? "";
+      if (block.tab_usage) out.workspaces[home].tab_usage = block.tab_usage;
     }
   }
   return out;

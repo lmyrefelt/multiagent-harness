@@ -6,9 +6,11 @@
 #          $handoff              "> your turn: ..." | "waiting on integrator" | "waiting on you (...)"
 #          $branch $model        checkout branch, model of its latest pi turn
 #          $ctx                  context in use: "ctx 43% (117k)"
+#          $tokens_recent        tokens: "last 1.4k (Σ 18k)" / "Σ 18k"
 #          $cache_hi/_mid/_low   prompt-cache hit rate; exactly one is set (>=80 / >=50 / below)
 #          $limit                tightest quota of its model: "5h 72%", "wk 9% !3h" (! = runs out first)
 #   space: $pipeline             "CHANGE-0001 plan r5: planner | ..."
+#          $tab_usage            tightest limit summary for tab / space: "Codex wk: 12% !2d"
 #          $usage_hdr $usage_1..5  account usage, on the integrator's workspace only:
 #                                "Codex  5h 90%  wk 12% !2d"
 #
@@ -21,7 +23,7 @@ pi = [
   [{ token = "$handoff", rules = [{ starts_with = ">", fg = "#e5c07b", bold = true }, { starts_with = "waiting on you", fg = "#e06c75", bold = true }, { starts_with = "waiting", dim = true }] }],
   [{ token = "$branch", fg = "#56b6c2" }],
   [{ token = "$model", dim = true }],
-  [{ token = "$ctx", dim = true }, { token = "$cache_hi", dim = true }, { token = "$cache_mid", fg = "#e5c07b" }, { token = "$cache_low", fg = "#e06c75", bold = true }, { token = "$limit", rules = [{ contains = "!", fg = "#e06c75", bold = true }, { equals = "pay-per-token", fg = "#e5c07b" }] }],
+  [{ token = "$glyph", rules = [{ equals = "■", fg = "#e06c75", bold = true }, { equals = "▲", fg = "#e5c07b" }, { equals = "▽", fg = "#98c379" }] }, { token = "$ctx", dim = true }, { token = "$tokens_recent", dim = true }, { token = "$cache_hi", dim = true }, { token = "$cache_mid", fg = "#e5c07b" }, { token = "$cache_low", fg = "#e06c75", bold = true }, { token = "$limit", rules = [{ contains = "!", fg = "#e06c75", bold = true }, { equals = "pay-per-token", fg = "#e5c07b" }] }],
 ]
 
 [ui.sidebar.spaces]
@@ -29,6 +31,7 @@ rows = [
   ["state_icon", "workspace"],
   ["branch", "git_status"],
   [{ token = "$pipeline", fg = "#e5c07b" }],
+  [{ token = "$tab_usage", rules = [{ contains = "!", fg = "#e06c75", bold = true }], dim = true }],
   [{ token = "$usage_hdr", dim = true }],
   [{ token = "$usage_1", rules = [{ contains = "!", fg = "#e06c75" }] }],
   [{ token = "$usage_2", rules = [{ contains = "!", fg = "#e06c75" }] }],

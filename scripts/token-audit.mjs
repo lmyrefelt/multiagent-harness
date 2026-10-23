@@ -211,7 +211,14 @@ export async function readOpencodeDb(dbPath) {
 	try { ({ DatabaseSync } = await import("node:sqlite")); } catch { console.error(`token-audit: node:sqlite unavailable (Node >= 22.5 needed) - skipping ${dbPath}`); return []; }
 	const tmp = mkdtempSync(join(tmpdir(), "token-audit-oc-"));
 	try {
-		for (const ext of ["", "-wal", "-shm"]) if (existsSync(dbPath + ext)) copyFileSync(dbPath + ext, join(tmp, "opencode.db" + ext));
+		for (const ext of ["", "-wal", "-shm"]) {
+			if (existsSync(dbPath + ext)) {
+				try { copyFileSync(dbPath + ext, join(tmp, "opencode.db" + ext)); } catch (e) {
+					// In restricted environments or sandboxes without permission to ~/.harness, skip
+					return [];
+				}
+			}
+		}
 		const db = new DatabaseSync(join(tmp, "opencode.db"));
 		const sessions = db.prepare("select id, parent_id, directory, title from session").all();
 		const out = [];

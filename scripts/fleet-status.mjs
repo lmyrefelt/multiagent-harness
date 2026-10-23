@@ -35,8 +35,11 @@ import {
 /** Same {messages,totalTokens,cost} merge session-cost.mjs's own mergeByModel does - duplicated, not imported (that helper isn't exported); same convention as log() being duplicated per-adapter elsewhere in this project. */
 function mergeCostByModel(dst, src) {
   for (const [k, v] of Object.entries(src)) {
-    const d = dst[k] ??= { messages: 0, totalTokens: 0, cost: 0 };
+    const d = dst[k] ??= { messages: 0, totalTokens: 0, cost: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
     d.messages += v.messages; d.totalTokens += v.totalTokens; d.cost += v.cost;
+    d.input += (v.input ?? 0); d.output += (v.output ?? 0);
+    d.cacheRead += (v.cacheRead ?? 0); d.cacheWrite += (v.cacheWrite ?? 0);
+    d.reasoning += (v.reasoning ?? 0);
   }
   return dst;
 }

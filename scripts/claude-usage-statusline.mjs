@@ -58,16 +58,48 @@ function log(rec) {
  * if rate_limits is absent entirely (pre-first-response, API-key auth, or a
  * Claude apps gateway without this feature) - absence is the expected,
  * common case, not an error.
+ * Supports both standard object format and alternative array/map shapes seen in
+ * diverse Claude Code versions / usage tracker plugins.
  */
 export function extractRateLimitSnapshot(input) {
   const rl = input?.rate_limits;
   if (!rl) return null;
-  const fiveHour = rl.five_hour;
-  const sevenDay = rl.seven_day;
+  // Handle object or array forms if present
+  let fiveHour = rl.five_hour ?? rl.fiveHour ?? rl["5h"];
+  let sevenDay = rl.seven_day ?? rl.sevenDay ?? rl["7d"] ?? rl.weekly;
+  if (!fiveHour && !sevenDay && Array.isArray(rl)) {
+    fiveHour = rl.find((w) => w?.window === "5h" || w?.type === "five_hour" || w?.duration === 18000);
+    sevenDay = rl.find((w) => w?.window === "7d" || w?.type === "seven_day" || w?.duration === 604800);
+  }
   if (!fiveHour && !sevenDay) return null;
   const snap = {};
-  if (fiveHour) { snap.five_hour_pct = fiveHour.used_percentage; snap.five_hour_resets_at = fiveHour.resets_at; }
-  if (sevenDay) { snap.seven_day_pct = sevenDay.used_percentage; snap.seven_day_resets_at = sevenDay.resets_at; }
+  const getPct = (w) => w.used_percentage ?? w.usedPercentage ?? w.usedPct ?? (typeof w.used === "number" && typeof w.limit === "number" && w.limit > 0 ? (100 * w.used) / w.limit : undefined);
+  const getReset = (w) => {
+    const r = w.resets_at ?? w.resetsAt ?? w.reset_time;
+    if (r == null) return undefined;
+    if (typeof r === "number") return r > 1e12 ? Math.floor(r / 1000) : r;
+    const parsed = Date.parse(r);
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
+  };
+  const getTokens = (w) => w.tokens_used ?? w.tokensUsed ?? w.used_tokens ?? w.tokens;
+
+  if (fiveHour) {
+    snap.five_hour_pct = getPct(fiveHour);
+    snap.five_hour_resets_at = getReset(fiveHour);
+    const tok = getTokens(fiveHour);
+    if (tok != null) snap.five_hour_tokens = tok;
+  }
+  if (sevenDay) {
+    snap.seven_day_pct = getPct(sevenDay);
+    snap.seven_day_resets_at = getReset(sevenDay);
+    const tok = getTokens(sevenDay);
+    if (tok != null) snap.seven_day_tokens = tok;
+  }
+  // Extract session context tokens / total tokens introspection if available
+  const ctx = input?.session?.context_tokens ?? input?.context_tokens ?? input?.usage?.total_tokens;
+  if (ctx != null) snap.context_tokens = ctx;
+
+  if (snap.five_hour_pct == null && snap.seven_day_pct == null) return null;
   return snap;
 }
 
@@ -116,6 +148,11 @@ function selftest() {
   const snap2 = extractRateLimitSnapshot(onlyFiveHour);
   ok(snap2.five_hour_pct === 10 && snap2.seven_day_pct === undefined,
     "REGRESSION: Claude Code drops a window once its resets_at passes - seven_day being absent while five_hour is present must still extract what IS there, not null out the whole snapshot");
+
+  const altShape = { rate_limits: [{ window: "5h", usedPercentage: 35, resetsAt: 1738425600, tokens: 45000 }, { window: "7d", used: 80, limit: 100, reset_time: "2026-07-06T07:50:32Z" }], context_tokens: 12000 };
+  const snapAlt = extractRateLimitSnapshot(altShape);
+  ok(snapAlt.five_hour_pct === 35 && snapAlt.five_hour_tokens === 45000 && snapAlt.seven_day_pct === 80 && snapAlt.context_tokens === 12000,
+    "handles alternative statusline shapes from usage-tracker / token introspection plugins");
 
   // formatStatusLine - the actual visible feature must keep working
   ok(formatStatusLine({ model: { display_name: "Sonnet" } }, null) === "[Sonnet]",
