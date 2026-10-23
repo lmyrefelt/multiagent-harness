@@ -729,6 +729,20 @@ function selftest() {
     { ev: "test_run", passed: false }, { ev: "test_run", passed: false },
   ]).verdict === "fail", "never recorded a pass at all -> fail");
 
+  // evaluateRedVerified edge cases
+  ok(evaluateRedVerified([
+    { ev: "test_run", passed: false }, { ev: "test_run", passed: false }, { ev: "test_run", passed: true },
+  ]).verdict === "pass", "multiple fails before pass -> real RED verified");
+  ok(evaluateRedVerified([
+    { ev: "test_run", passed: true }, { ev: "test_run", passed: false }, { ev: "test_run", passed: true },
+  ]).verdict === "fail", "pass then fail then pass -> fail (RED must come before the first GREEN)");
+  ok(evaluateRedVerified([
+    null, undefined, { ev: "run_summary" }, { ev: "test_run", passed: false }, { ev: "violation" }, { ev: "test_run", passed: true },
+  ]).verdict === "pass", "ignored interleavings (null, undefined, non-test_run) don't break verification");
+  ok(evaluateRedVerified([
+    { ev: "test_run" }, { ev: "test_run", passed: true },
+  ]).verdict === "fail", "missing 'passed' properties should not accidentally count as pass or fail");
+
   // readEvidenceRecords — fake fs, no real disk I/O
   {
     const fakeExists = (p) => p.endsWith(".pi-session") || p.endsWith("evidence.jsonl");
