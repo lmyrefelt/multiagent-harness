@@ -545,6 +545,21 @@ function selftest() {
   const ok = (c, n) => { if (!c) { console.error("FAIL: " + n); fails++; } };
   const owned = ["apps/api/src/harness/war_room/**", "apps/api/tests/war_room/**"];
 
+  // globToRe tests
+  ok(globToRe("test").test("test"), "globToRe matches exact string");
+  ok(!globToRe("test").test("test2"), "globToRe strictly anchors to end");
+  ok(!globToRe("test").test("1test"), "globToRe strictly anchors to start");
+  ok(globToRe("test.*").test("test.js"), "globToRe escapes dot and matches wildcard");
+  ok(globToRe("test/a*b").test("test/ab"), "globToRe matches zero characters for *");
+  ok(globToRe("test/a*b").test("test/axxb"), "globToRe matches multiple characters for *");
+  ok(!globToRe("test/a*b").test("test/ax/xb"), "globToRe * does not match slash");
+  ok(!globToRe("test/**/b").test("test/b"), "globToRe ** replaces with .* so requires slashes around it");
+  ok(globToRe("test/**/b").test("test/x/y/b"), "globToRe ** matches multiple directories");
+  ok(globToRe("test/**").test("test/a/b/c"), "globToRe ** at end matches anything inside");
+  ok(globToRe("test/?b").test("test/xb"), "globToRe ? matches one character");
+  ok(!globToRe("test/?b").test("test/b"), "globToRe ? requires exactly one character");
+  ok(globToRe("test\\+^${}()|[]").test("test\\+^${}()|[]"), "globToRe escapes regex specials");
+
   ok(isTestFile("apps/api/tests/war_room/test_lifecycle.py"), "test_ file is a test");
   ok(isTestFile("apps/web/src/components/triage/v2/AiSummary.test.tsx"), ".test.tsx file is a test");
   ok(isTestFile("docs/changes/CHANGE-0043-war-room/features/x.feature"), ".feature is a test");
