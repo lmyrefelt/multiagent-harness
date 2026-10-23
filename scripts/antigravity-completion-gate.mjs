@@ -66,6 +66,7 @@
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { evaluateCompletionGate, loadAttempts } from "./completion-gate-core.mjs";
+import { counterStatePath } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 
@@ -120,12 +121,6 @@ export function extractAntigravityTranscript(lines) {
   return { lastAssistantMessage, toolResults };
 }
 
-const counterStatePath = (conversationId) => {
-  const evidence = process.env.CONTRACT_EVIDENCE;
-  const dir = evidence ? dirname(evidence) : ".";
-  return join(dir, `antigravity-completion-attempts-${conversationId || "default"}.json`);
-};
-
 async function main() {
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
@@ -160,7 +155,7 @@ async function main() {
       return done({ decision: "allow" });
     }
 
-    const statePath = counterStatePath(envelope.conversationId);
+    const statePath = counterStatePath("antigravity-completion-attempts", envelope.conversationId);
     const priorAttempts = loadAttempts(statePath);
 
     const r = evaluateCompletionGate({

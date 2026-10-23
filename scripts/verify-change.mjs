@@ -30,7 +30,7 @@
 
 import { execSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, dirname } from "node:path";
 
 const SP = String.fromCharCode(32);
 const NL = String.fromCharCode(10);
@@ -374,6 +374,12 @@ export function loadCounters(path, newCounters) {
     try { return JSON.parse(readFileSync(path, "utf8")); } catch { /* fall through to fresh */ }
   }
   return newCounters();
+}
+
+export function counterStatePath(prefix, id) {
+  const evidence = process.env.CONTRACT_EVIDENCE;
+  const dir = evidence ? dirname(evidence) : ".";
+  return join(dir, `${prefix}-${id || "default"}.json`);
 }
 
 export function readEvidenceRecords(root, listFn = readdirSync, readFn = readFileSync, existsFn = existsSync) {

@@ -96,7 +96,7 @@
 //
 import { readFileSync, writeFileSync, existsSync, appendFileSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { loadCounters } from "./verify-change.mjs";
+import { loadCounters, counterStatePath } from "./verify-change.mjs";
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 const UNPARSEABLE_PATCH_PATH = "__codex_adapter_unparseable_patch__";
@@ -229,12 +229,6 @@ export function evaluateAllPaths(guards, events, ctx) {
 // Indirection so selftest can run without importing checks.mjs's real path.
 let evaluateDuringRef = () => ({ violations: [], blocked: false, reason: null });
 
-const counterStatePath = (sessionId) => {
-  const evidence = process.env.CONTRACT_EVIDENCE;
-  const dir = evidence ? dirname(evidence) : ".";
-  return join(dir, `codex-counters-${sessionId || "default"}.json`);
-};
-
 async function main() {
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
@@ -251,7 +245,7 @@ async function main() {
     if (!guardsPath) return done(deny("codex-guard-adapter: CONTRACT_GUARDS is not set - failing closed, not open."));
     const guards = JSON.parse(readFileSync(guardsPath, "utf8")).guards;
 
-    const statePath = counterStatePath(envelope.session_id);
+    const statePath = counterStatePath("codex-counters", envelope.session_id);
     const counters = loadCounters(statePath, newCounters);
     const repoRoot = process.env.REPO_ROOT || process.cwd();
     const wasStopped = !!counters.stopped;
