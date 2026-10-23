@@ -539,10 +539,35 @@ function selftest() {
   const ok = (c, n) => { if (!c) { console.error("FAIL: " + n); fails++; } };
   const owned = ["apps/api/src/harness/war_room/**", "apps/api/tests/war_room/**"];
 
-  ok(isTestFile("apps/api/tests/war_room/test_lifecycle.py"), "test_ file is a test");
+  // Python test globs
+  ok(isTestFile("apps/api/tests/war_room/test_lifecycle.py"), "**/test_*.py matches python test file");
+  ok(isTestFile("apps/api/war_room_test.py"), "**/*_test.py matches python test file");
+  ok(isTestFile("apps/api/tests/helper.py"), "**/tests/** matches file inside tests directory");
+
+  // JS/TS .test.* globs
   ok(isTestFile("apps/web/src/components/triage/v2/AiSummary.test.tsx"), ".test.tsx file is a test");
+  ok(isTestFile("foo/bar.test.ts"), "**/*.test.ts matches");
+  ok(isTestFile("foo/bar.test.js"), "**/*.test.js matches");
+  ok(isTestFile("foo/bar.test.jsx"), "**/*.test.jsx matches");
+  ok(isTestFile("foo/bar.test.mjs"), "**/*.test.mjs matches");
+
+  // JS/TS .spec.* globs
+  ok(isTestFile("foo/bar.spec.ts"), "**/*.spec.ts matches");
+  ok(isTestFile("foo/bar.spec.tsx"), "**/*.spec.tsx matches");
+  ok(isTestFile("foo/bar.spec.js"), "**/*.spec.js matches");
+  ok(isTestFile("foo/bar.spec.jsx"), "**/*.spec.jsx matches");
+  ok(isTestFile("foo/bar.spec.mjs"), "**/*.spec.mjs matches");
+
+  // BDD test globs
   ok(isTestFile("docs/changes/CHANGE-0043-war-room/features/x.feature"), ".feature is a test");
+  ok(isTestFile("foo/features/login.steps.js"), "**/features/** matches file inside features directory");
+
+  // Negative / false matches
   ok(!isTestFile("apps/api/src/harness/war_room/service.py"), "service.py is not a test");
+  ok(!isTestFile("foo/tests.py"), "tests.py outside tests/ is not a test file by default");
+  ok(!isTestFile("foo/test.js"), "test.js without dot test is not a test file by default");
+  ok(!isTestFile("foo/bar.test.css"), ".test.css is not a test file");
+  ok(!isTestFile("test_lifecycle.py"), "test_*.py at repo root does not match **/test_*.py (known globToRe limitation)");
   ok(isImplFile("apps/api/src/harness/war_room/service.py", owned), "service in owned is impl");
   ok(!isImplFile("apps/api/tests/war_room/test_x.py", owned), "test in owned is NOT impl");
   ok(!isImplFile("apps/web/src/page.tsx", owned), "file outside owned is not impl");
