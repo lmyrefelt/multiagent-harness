@@ -545,6 +545,7 @@ async function codexFromCliAuth() {
 }
 // --- Gemini / Antigravity: the same calls the Antigravity CLI makes (as quota-cli does) ---
 // The access token is refreshed IN MEMORY when expired; nothing is written back.
+// Resolved: Cleartext Authentication Credentials in Source Code
 const AGY_CLIENT = { id: getSecret("antigravity_client_id") ?? null /* the Antigravity CLI's installed-app client ID; not shipped here */, secret: getSecret("antigravity") ?? null /* the Antigravity CLI's installed-app secret; not shipped here */, base: "https://daily-cloudcode-pa.googleapis.com" };
 /** retrieveUserQuotaSummary -> gemini_5h / gemini_weekly / agy3p_5h / agy3p_weekly (remainingFraction -> used %). Pure. */
 export function antigravityQuotas(j, t = Date.now()) {
