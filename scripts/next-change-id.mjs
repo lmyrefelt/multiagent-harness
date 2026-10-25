@@ -26,19 +26,16 @@
  * rather than hand out an id it cannot prove is free.
  */
 
-import { execSync, exec } from "node:child_process";
+import { execSync } from "node:child_process";
 import { readdirSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
-
-const execAsync = promisify(exec);
 
 function repoRoot() {
   return execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
 }
 
 // Every id in use, from folders and from branches. Returns a Set of integers.
-async function usedIds(root) {
+function usedIds(root) {
   const used = new Set();
 
   const base = join(root, "docs", "changes");
@@ -54,27 +51,55 @@ async function usedIds(root) {
   // All branches, across every worktree. `git branch -a` would add remotes too;
   // local + the standard refs are enough here and need no network.
   const branches = execSync("git branch --format='%(refname:short)'", { encoding: "utf8" });
-
   const lines = branches.split(/\r?\n/);
-  // Concurrency limit chunking to avoid spawning too many processes at once
-  const CONCURRENCY_LIMIT = 50;
-  for (let i = 0; i < lines.length; i += CONCURRENCY_LIMIT) {
-    const chunk = lines.slice(i, i + CONCURRENCY_LIMIT);
-    await Promise.all(chunk.map(async (line) => {
-      const branchName = line.trim();
-      if (!branchName) return;
-      const m = branchName.match(/^feature\/CHANGE-0*(\d+)\b/i);
-      if (m) used.add(Number(m[1]));
-      // Also scan docs/changes inside each branch (e.g. planning/* branches)
-      try {
-        const { stdout: tree } = await execAsync(`git ls-tree -d --name-only "${branchName}":docs/changes`);
-        for (const entry of tree.split(/\r?\n/)) {
-          const em = entry.match(/^CHANGE-0*(\d+)\b/i);
-          if (em) used.add(Number(em[1]));
-        }
-      } catch { /* branch may not have docs/changes yet */ }
-    }));
+
+  const branchNames = [];
+  for (const line of lines) {
+    const branchName = line.trim();
+    if (!branchName) continue;
+    const m = branchName.match(/^feature\/CHANGE-0*(\d+)\b/i);
+    if (m) used.add(Number(m[1]));
+    branchNames.push(branchName);
   }
+
+  if (branchNames.length > 0) {
+    // Optimization: avoid spawning `git ls-tree` per branch.
+    // Use `git cat-file --batch-check` to quickly resolve all branch:docs/changes trees.
+    const input = branchNames.map(b => `${b}:docs/changes`).join('\n');
+    try {
+      const catFileOutput = execSync('git cat-file --batch-check="%(objectname) %(objecttype)"', { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+
+      const existingTrees = new Set();
+      for (const line of catFileOutput.split('\n')) {
+        if (line.endsWith(' tree')) {
+          existingTrees.add(line.split(' ')[0]);
+        }
+      }
+
+      // Instead of reading docs/changes from all branches, we only read the unique trees.
+      for (const treeHash of existingTrees) {
+        try {
+          const treeOut = execSync(`git ls-tree -d --name-only ${treeHash}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+          for (const entry of treeOut.split(/\r?\n/)) {
+            const em = entry.match(/^CHANGE-0*(\d+)\b/i);
+            if (em) used.add(Number(em[1]));
+          }
+        } catch { /* branch may not have docs/changes yet */ }
+      }
+    } catch {
+      // Fallback if batch check fails for some reason
+      for (const branchName of branchNames) {
+        try {
+          const tree = execSync(`git ls-tree -d --name-only "${branchName}":docs/changes`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+          for (const entry of tree.split(/\r?\n/)) {
+            const em = entry.match(/^CHANGE-0*(\d+)\b/i);
+            if (em) used.add(Number(em[1]));
+          }
+        } catch { /* branch may not have docs/changes yet */ }
+      }
+    }
+  }
+
   return used;
 }
 
@@ -87,10 +112,10 @@ function nextId(used) {
 
 const pad = (n) => "CHANGE-" + String(n).padStart(4, "0");
 
-async function main() {
+function main() {
   const root = repoRoot();
   const args = process.argv.slice(2);
-  const used = await usedIds(root);
+  const used = usedIds(root);
   const n = nextId(used);
   const id = pad(n);
 
@@ -146,7 +171,4 @@ async function main() {
   console.log(`docs/changes/${dirName}/`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main();
