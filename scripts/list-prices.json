@@ -1,0 +1,15 @@
+{
+ "_comment": "List API prices, USD per million tokens, used by cost-ledger.mjs to put every model turn in API-equivalent dollars. First row whose `match` regex hits the ledger's model id wins (ids look like anthropic/claude-opus-5-5, codex/gpt-6.1-sol, antigravity/Gemini 3.8 Pro (High), opencode/deepseek-v4.1-flash). Only add rows you have checked against a provider's price page: a model with no row is reported as unpriced tokens, never guessed. pi turns with no row fall back to pi's own logged cost. cache_write_5m/1h default to input, cache_read defaults to input when omitted.",
+ "models": [
+  {
+   "match": "claude-opus-5-5|claude/opus",
+   "input": 4, "cache_write_5m": 5, "cache_write_1h": 8, "cache_read": 0.2, "output": 20,
+   "source": "github.com/phuryn/experiments subscription-multipliers/05-claude-pro (Anthropic list, Oct 2026); input/output/cache-read cross-checked usagepricing.com 2026-10-28"
+  },
+  {
+   "match": "claude-sonnet-5-5|claude/sonnet",
+   "input": 2, "cache_write_5m": 2.5, "cache_write_1h": 4, "cache_read": 0.1, "output": 10,
+   "source": "llmreference.com/model/claude-sonnet-5-5/anthropic-api, checked 2026-10-28"
+  }
+ ]
+}
