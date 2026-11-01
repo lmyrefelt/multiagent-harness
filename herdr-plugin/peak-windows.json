@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "Provider peak windows: hours when the same work costs more of a plan or a balance.",
+    "Read by scripts/peak-windows.mjs. Used by cost-ledger.mjs (tags every turn, measures the meters inside vs outside each window)",
+    "and route-worker.mjs (a cost penalty on affected models while a window is open).",
+    "status 'published': the provider states it, so the router applies the penalty.",
+    "status 'measure': not confirmed for how WE pay, so the router applies the penalty only after the ledger's window test says",
+    "the meter really moves faster inside the window (verdict 'passes_through'). Until then it is only measured.",
+    "applies.model: regex on the catalog id / ledger model id. Free models (catalog cost 'free') are never penalised.",
+    "hours: [start, end) in the window's own time zone; days: three-letter weekday names in that zone."
+  ],
+  "penalty": 3,
+  "windows": [
+    {
+      "id": "anthropic",
+      "label": "Anthropic peak",
+      "tz": "America/Los_Angeles",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "hours": [[5, 11]],
+      "effect": "Claude's 5-hour session limit drains faster; off-peak gets double the usual rate.",
+      "applies": { "model": "^(anthropic|claude)/" },
+      "meters": ["claude_5h", "claude_weekly"],
+      "status": "published",
+      "sources": [
+        "https://www.newsbytesapp.com/news/science/anthropic-restricts-claude-weekday-mornings-openai-removes-codex-caps/tldr"
+      ]
+    },
+    {
+      "id": "deepseek",
+      "label": "DeepSeek peak",
+      "tz": "UTC",
+      "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "hours": [[1, 4], [6, 10]],
+      "effect": "DeepSeek's own API bills V4 models at 2x in these hours. Unknown whether OpenCode Go / Zen pass it on.",
+      "applies": { "model": "deepseek" },
+      "meters": ["opencodego_5h", "opencodego_weekly", "opencodego_monthly"],
+      "status": "measure",
+      "days_note": "Weekdays per codingplans.dev; hwbusters gives the same hours without days. DeepSeek's pricing page was not reachable when this was written - check api-docs.deepseek.com/quick_start/pricing and fix days/hours here if they differ.",
+      "sources": [
+        "https://codingplans.dev/briefs/opencode-go-usage-limits/",
+        "https://hwbusters.com/news/deepseek-api-prices-rise-up-to-1100-on-sunday-and-peak-hours-come-with-them/"
+      ]
+    }
+  ],
+  "test": {
+    "_comment": "Window test thresholds (cost-ledger). A meter span counts when >= model_share of its weighted tokens come from the window's models. Verdict needs min_spans and min_points on each side; ratio = meter points per weighted Mtok inside / outside.",
+    "model_share": 0.8,
+    "min_spans": 5,
+    "min_points": 5,
+    "passes_through_ratio": 1.6,
+    "flat_ratio": 1.25
+  }
+}

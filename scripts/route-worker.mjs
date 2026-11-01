@@ -33,6 +33,7 @@
  *   node scripts/route-worker.mjs --refresh-usage        refresh .pi-session/routing/usage.json
  *   node scripts/route-worker.mjs --selftest
  */
+import { loadPeakConfig, loadWindowVerdicts, routerPenalty } from "./peak-windows.mjs";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, appendFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -291,7 +292,7 @@ export function benchFor(m, bench) {
 	return r && r.total ? r : null;
 }
 
-export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usage = {}, pricing = null, allowedBackends = null, logins = {}, outcomes = null, limits = [], bench = null, now = Date.now() }) {
+export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usage = {}, pricing = null, allowedBackends = null, logins = {}, outcomes = null, limits = [], bench = null, peak = null, now = Date.now() }) {
 	const risk = facts.risk.tier || "medium";
 	const difficulty = scoreDifficulty(facts, { planRounds });
 	const hint = facts.routing ?? {};
@@ -369,9 +370,12 @@ export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usag
 		// visual work: models trusted by the owner (visual:true - Opus, Astra) come first; a model that only
 		// qualifies by its design score is the fallback when those are out of quota
 		const visualPenalty = vis.visual && !m.visual ? (catalog.visual_fallback_penalty ?? 12) : 0;
-		const cost = (Math.max(0, tier - minTier)) * 10 + visualPenalty + costPts + c.scarcity * 4 - c.bonus * 3 + (m.preference ?? 0) + be.weight + rec.points;
+		// provider peak window open right now (peak-windows.json): Anthropic always, 'measure' windows
+		// (DeepSeek) only once the cost ledger confirmed the meter really moves faster inside it
+		const pw = peak ? routerPenalty(peak.config, { ...m, opencode_model: be.backend === "opencode" ? be.model : m.opencode_model }, now, peak.verdicts) : { points: 0, notes: [] };
+		const cost = (Math.max(0, tier - minTier)) * 10 + visualPenalty + costPts + c.scarcity * 4 - c.bonus * 3 + (m.preference ?? 0) + be.weight + rec.points + pw.points;
 		const priceNote = price && price.usd_per_mtok > 0 ? `$${price.usd_per_mtok < 0.01 ? price.usd_per_mtok.toFixed(4) : price.usd_per_mtok.toFixed(3)}/Mtok${price.source === "plan" ? ` on ${price.plan}` : " list"}` : "";
-		return { id: m.id, tier: m.tier, ok: true, cost: Math.round(cost * 100) / 100, why: [`via ${be.backend}`, priceNote, c.why, rec.why].filter(Boolean).join(", "), record: rec.points, price: price?.usd_per_mtok ?? null, model: m, backend: be.backend, launchModel: be.model };
+		return { id: m.id, tier: m.tier, ok: true, cost: Math.round(cost * 100) / 100, why: [`via ${be.backend}`, priceNote, c.why, ...pw.notes, rec.why].filter(Boolean).join(", "), record: rec.points, peakPoints: pw.points, price: price?.usd_per_mtok ?? null, model: m, backend: be.backend, launchModel: be.model };
 	}).sort((a, b) => (b.ok - a.ok) || (a.cost ?? 99) - (b.cost ?? 99));
 
 	let candidates = rank(minTier);
@@ -1052,6 +1056,11 @@ export function detectLogins(repoRoot) {
 }
 function readPipeline(repoRoot) { return readJson(join(repoRoot, "herdr-plugin", "pipeline.json")) ?? {}; }
 
+/** Peak windows + the ledger's verdicts, for routeWorker's `peak`. Never throws. */
+export function loadPeak(repoRoot) {
+	try { return { config: loadPeakConfig(repoRoot), verdicts: loadWindowVerdicts(repoRoot) }; } catch { return null; }
+}
+
 /** Everything from disk -> decision. Never throws. */
 export function decideForChange(repoRoot, change, { entries = null } = {}) {
 	try {
@@ -1061,7 +1070,7 @@ export function decideForChange(repoRoot, change, { entries = null } = {}) {
 		const planRounds = all.filter((e) => e.verdict === "plan-changes-requested").length;
 		const pipeline = readPipeline(repoRoot);
 		return { change, change_yaml: f, ...routeWorker({ facts, entries: all, planRounds, catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot),
-			allowedBackends: pipeline.auto_backends ?? null, logins: detectLogins(repoRoot), limits: readJson(join(repoRoot, ".pi-session", "routing", "limits.json")) ?? [], bench: readJson(join(repoRoot, ".pi-session", "routing", "bench.json")), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")) }) };
+			allowedBackends: pipeline.auto_backends ?? null, logins: detectLogins(repoRoot), limits: readJson(join(repoRoot, ".pi-session", "routing", "limits.json")) ?? [], bench: readJson(join(repoRoot, ".pi-session", "routing", "bench.json")), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot) }) };
 	} catch (e) {
 		return { change, escalateToHuman: false, error: String(e), reason: `router failed (${e.message}) - using the pinned backend`, pick: null };
 	}
@@ -1083,7 +1092,7 @@ export const MAP_SCENARIOS = [
 export function routingMap(repoRoot, { now = Date.now() } = {}) {
 	const pipeline = readPipeline(repoRoot);
 	const ctx = { catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot), allowedBackends: pipeline.auto_backends ?? null,
-		logins: detectLogins(repoRoot), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), now };
+		logins: detectLogins(repoRoot), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot), now };
 	return MAP_SCENARIOS.map((sc) => {
 		const facts = readRoutingFacts(["title: scenario", "risk:", `  tier: ${sc.risk}`, "routing:", `  complexity: ${sc.size}`, `  visual: ${sc.visual ? "true" : "false"}`].join("\n"));
 		try { return { ...sc, ...routeWorker({ facts, ...ctx }) }; } catch (e) { return { ...sc, error: String(e.message ?? e) }; }
@@ -1095,11 +1104,11 @@ export function routingMap(repoRoot, { now = Date.now() } = {}) {
  * with the same data a real launch uses. Feeds the dashboard's routing tree.
  */
 export const SCENARIO_SIZES = ["S", "M", "L", "XL"];
-export function routingScenarios({ catalog, usage = {}, pricing = null, allowedBackends = null, logins = {}, outcomes = null, now = Date.now() }) {
+export function routingScenarios({ catalog, usage = {}, pricing = null, allowedBackends = null, logins = {}, outcomes = null, peak = null, now = Date.now() }) {
 	const run = (risk, size, { visual = false, struggling = 0 } = {}) => {
 		const facts = readRoutingFacts(`risk:\n  tier: ${risk}\nrouting:\n  complexity: ${size}\n  visual: ${visual}`);
 		const entries = Array.from({ length: struggling * 2 }, () => ({ role: "integrator", verdict: "impl-changes-requested" }));
-		const d = routeWorker({ facts, entries, catalog, usage, pricing, allowedBackends, logins, outcomes, now });
+		const d = routeWorker({ facts, entries, catalog, usage, pricing, allowedBackends, logins, outcomes, peak, now });
 		const ok = (d.candidates ?? []).filter((x) => x.ok);
 		return { risk, size, visual, struggling, minTier: d.minTier, human: !!d.escalateToHuman, wait: !!d.wait, waitUntil: d.waitUntil ?? null, fallback: /fallback:/.test(d.reason ?? ""), reason: d.reason,
 			pick: d.pick ? { id: d.pick.id, backend: d.pick.backend, cost: ok[0]?.cost ?? null } : null,
@@ -1136,7 +1145,7 @@ export function routingScenarios({ catalog, usage = {}, pricing = null, allowedB
 export function scenariosForRepo(repoRoot) {
 	const pipeline = readPipeline(repoRoot);
 	return routingScenarios({ catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot), allowedBackends: pipeline.auto_backends ?? null,
-		logins: detectLogins(repoRoot), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")) });
+		logins: detectLogins(repoRoot), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot) });
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,6 +1211,35 @@ function selftest() {
 	f = readRoutingFacts(yaml().replace("tier: low", "tier: high"));
 	d = routeWorker({ facts: f, catalog, usage: base, now });
 	ok(d.pick?.tier >= 3, `high risk -> tier >= 3 (got ${d.pick?.id})`);
+
+	// peak windows: Claude loses its edge while Anthropic's peak is open; DeepSeek only once measured
+	{
+		const peakCfg = { penalty: 3, windows: [
+			{ id: "anthropic", label: "Anthropic peak", tz: "America/Los_Angeles", days: ["Mon", "Tue", "Wed", "Thu", "Fri"], hours: [[5, 11]], applies: { model: "^(anthropic|claude)/" }, status: "published" },
+			{ id: "deepseek", label: "DeepSeek peak", tz: "UTC", days: ["Mon", "Tue", "Wed", "Thu", "Fri"], hours: [[1, 4], [6, 10]], applies: { model: "deepseek" }, status: "measure" },
+		] };
+		const pc = { models: [
+			{ id: "claude/sonnet", backend: "claude", model: "sonnet", tier: 3, cost: "sub", preference: -1 },
+			{ id: "codex/gpt-test", backend: "codex", model: "gpt-test", tier: 3, cost: "sub" },
+		] };
+		const hf = readRoutingFacts(yaml().replace("tier: low", "tier: high"));
+		const offPeak = Date.parse("2026-11-02T22:00:00Z"), atPeak = Date.parse("2026-11-02T15:00:00Z"); // 07:00 PST Monday
+		let pd = routeWorker({ facts: hf, catalog: pc, usage: base, peak: { config: peakCfg, verdicts: {} }, now: offPeak });
+		ok(pd.pick?.id === "claude/sonnet", `off-peak -> Claude keeps its preference (got ${pd.pick?.id})`);
+		pd = routeWorker({ facts: hf, catalog: pc, usage: base, peak: { config: peakCfg, verdicts: {} }, now: atPeak });
+		ok(pd.pick?.id === "codex/gpt-test" && /Anthropic peak now/.test(pd.candidates.find((x) => x.id === "claude/sonnet")?.why ?? ""), `Anthropic peak -> Codex (got ${pd.pick?.id})`);
+		pd = routeWorker({ facts: hf, catalog: pc, usage: base, now: atPeak });
+		ok(pd.pick?.id === "claude/sonnet", "no peak config -> unchanged behaviour");
+		const dc = { models: [
+			{ id: "opencode-go/deepseek-v4.1-flash", backends: ["opencode"], opencode_model: "opencode-go/deepseek-v4.1-flash", tier: 3, cost: "sub", preference: -1 },
+			{ id: "codex/gpt-test", backend: "codex", model: "gpt-test", tier: 3, cost: "sub" },
+		] };
+		const dsPeak = Date.parse("2026-11-02T08:00:00Z");
+		pd = routeWorker({ facts: hf, catalog: dc, usage: base, peak: { config: peakCfg, verdicts: {} }, now: dsPeak });
+		ok(pd.pick?.id === "opencode-go/deepseek-v4.1-flash", `DeepSeek window unmeasured -> no penalty (got ${pd.pick?.id})`);
+		pd = routeWorker({ facts: hf, catalog: dc, usage: base, peak: { config: peakCfg, verdicts: { deepseek: { verdict: "passes_through" } } }, now: dsPeak });
+		ok(pd.pick?.id === "codex/gpt-test", `DeepSeek window confirmed -> penalty (got ${pd.pick?.id})`);
+	}
 
 	f = readRoutingFacts(yaml().replace("docs/a.md", "assets/sprites/hero.svg"));
 	d = routeWorker({ facts: f, catalog, usage: base, now });

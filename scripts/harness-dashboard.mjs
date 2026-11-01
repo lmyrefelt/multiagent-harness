@@ -43,6 +43,7 @@ import { join, dirname, resolve, basename } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadUsage, usageIsOld, decideForChange, loadCatalog, TIER_NAMES, scenariosForRepo } from "./route-worker.mjs";
+import { loadPeakConfig, loadWindowVerdicts, inWindow, nextChange, windowEnforced } from "./peak-windows.mjs";
 import { discoverSessionDirs, aggregateSessionDir, mergeFleet } from "./fleet-status.mjs";
 import { discoverTrees, readAllEntries, readJson, statePath, eventsLogPath, lifecycleDir } from "./handoff.mjs";
 import { loadScores, scoresAreOld, scoreTable, tierHints } from "./model-scores.mjs";
@@ -152,6 +153,33 @@ const QUOTA_ROWS = [
 	["opencodego_5h", "OpenCode Go · 5h"], ["opencodego_weekly", "OpenCode Go · week"], ["opencodego_monthly", "OpenCode Go · month"],
 ];
 
+/**
+ * PEAK WINDOWS: is a provider's peak open now, does the router act on it, and what the ledger
+ * measured. Everything shown comes from herdr-plugin/peak-windows.json and ledger-summary.json.
+ */
+export function peakWindowLines(W, { repo = REPO, now = Date.now() } = {}) {
+	const L = [];
+	const cfg = loadPeakConfig(repo), verdicts = loadWindowVerdicts(repo);
+	if (!cfg.windows.length) return L;
+	const sum = readJson(join(repo, ".pi-session", "routing", "ledger-summary.json"), null);
+	L.push(section("PEAK WINDOWS", W, c("gray", sum?.at ? `ledger ${ago(sum.at)}` : "ledger not built yet - node scripts/cost-ledger.mjs")));
+	const local = (ms) => new Date(ms).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+	for (const w of cfg.windows) {
+		const open = inWindow(w, now), nc = nextChange(w, now), v = verdicts[w.id], on = windowEnforced(w, verdicts);
+		const state = open ? c("yellow bold", "OPEN  ") : c("green", "closed");
+		const when = nc ? c("gray", `${nc.opens ? "opens" : "closes"} ${local(nc.at)}`) : "";
+		const router = on ? c(open ? "yellow" : "reset", `router +${cfg.penalty} while open`) : c("gray", "router: off until measured");
+		const m = v?.byMeter?.[v.meter];
+		const measured = !v ? "not measured" : v.verdict === "insufficient" || v.verdict === "no_meter_data"
+			? `${v.verdict}${m ? ` (${m.inside.spans} spans inside, ${m.outside.spans} outside)` : ""}`
+			: `${v.verdict}: ${v.meter} ${v.ratio}x per token inside${v.clientRatio != null ? `, client cost ${v.clientRatio}x` : ""}`;
+		L.push(`  ${pad(w.label ?? w.id, 16)} ${state} ${pad(when, 18)} ${pad(router, 26)} ${c("gray", cut(`${w.status} · ${measured}`, Math.max(20, W - 70)))}`);
+	}
+	L.push(c("gray", "  published = provider says so, router acts on it. measure = router acts only once the ledger finds the meter ~2x faster inside."));
+	L.push("");
+	return L;
+}
+
 export function viewOverview(d, W) {
 	const L = [];
 	const u = d.usage ?? {};
@@ -188,6 +216,8 @@ export function viewOverview(d, W) {
 	const lo = u.local;
 	L.push(`  ${pad("Local model server", 22)} ${!lo ? c("gray", "not probed") : lo.up ? c("green", "● up") + c("gray", `  ${(lo.models ?? []).slice(0, 4).join(", ")}`) : c("red", "● down") + c("gray", `  ${lo.error ?? ""}`)}`);
 	L.push("");
+
+	L.push(...peakWindowLines(W));
 
 	L.push(section("PROVIDER HEALTH", W, c("gray", "overload errors, last hour")));
 	const br = Object.entries(u.breakers ?? {});
