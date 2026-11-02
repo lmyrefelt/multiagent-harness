@@ -96,6 +96,9 @@ not what you'll see in your actual generated project.
 - `fleet-status.mjs`, `session-cost.mjs`, `*-usage-statusline.mjs`,
   `harvest-antigravity-permissions.mjs`, `antigravity-permissions-baseline.json`
   — monitoring/cost tooling, optional.
+- `cost-ledger.mjs` + `list-prices.json` — per-turn cost ledger across pi, Claude Code,
+  Codex and Antigravity, by role and change, with $ per subscription-meter point
+  (peak vs off-peak). See `docs/COST-LEDGER.md`.
 - `repo-health.mjs`, `board.mjs`, `change-diff.mjs`, `herdr-launch.sh` —
   supporting CLI utilities referenced by the docs below.
 
