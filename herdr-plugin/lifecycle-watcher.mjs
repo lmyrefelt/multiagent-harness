@@ -908,6 +908,17 @@ export function reconcile(repoRoot, { echo = false } = {}) {
       child.unref();
     } catch { /* usage stays unknown - routing still works */ }
   }
+  // Cost ledger (peak-window verdicts the router reads): rebuilt at most hourly.
+  if ((pipeline.routing?.mode ?? "shadow") !== "off") {
+    const summaryPath = join(repoRoot, ".pi-session", "routing", "ledger-summary.json");
+    let age = Infinity; try { age = Date.now() - statSync(summaryPath).mtimeMs; } catch { /* never built */ }
+    if (age > 60 * 60e3 && existsSync(join(repoRoot, "scripts", "cost-ledger.mjs"))) {
+      try {
+        const child = spawn(process.execPath, ["--no-warnings", join(repoRoot, "scripts", "cost-ledger.mjs"), "--days", "14"], { cwd: repoRoot, detached: true, stdio: "ignore", env: { ...process.env, HARNESS_REPO_ROOT: repoRoot } });
+        child.unref();
+      } catch { /* verdicts stay as they were - routing still works */ }
+    }
+  }
 
   // Registered panes that are gone, or dead past the start-up grace, are dropped
   // from the registry so they can never be mistaken for a live role again.

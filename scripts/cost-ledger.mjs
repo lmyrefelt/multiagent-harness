@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * cost-ledger.mjs - one normalised, per-message cost ledger across every backend the harness
- * runs (pi, Claude Code, Codex, Antigravity), tagged by ROLE and CHANGE, priced at list API
+ * runs (pi, Claude Code, Codex, Antigravity, OpenCode), tagged by ROLE and CHANGE, priced at list API
  * rates, and correlated with the subscription meters.
  *
  * WHY THIS EXISTS
@@ -22,8 +22,11 @@
  *   codex-sessions/**.jsonl                          Codex
  *   gemini-antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl   Antigravity
  *   antigravity-brain/<id>/.system_generated/logs/transcript.jsonl              (integrator)
+ *   opencode-home/opencode.db                        OpenCode (plus the shared login dir's db)
  * meters: <repo>/.pi-session/routing/usage-history.jsonl  ({t, q: {key: usedPct}}, route-worker)
  * prices: scripts/list-prices.json (USD per million tokens; edit to add models)
+ * peak windows: herdr-plugin/peak-windows.json (scripts/peak-windows.mjs) - every row is tagged
+ *   with the windows it fell in, and each window's meters get an inside/outside test
  *
  * OUTPUT
  *   .pi-session/routing/ledger.jsonl          one line per model turn (rebuilt each run)
@@ -44,7 +47,10 @@
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, dirname, basename, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { mkdtempSync, copyFileSync, rmSync } from "node:fs";
 import { readAntigravityModelChanges } from "./session-cost.mjs";
+import { loadPeakConfig, inWindow, appliesTo, DEFAULT_TEST } from "./peak-windows.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NL = "\n";
@@ -195,6 +201,39 @@ export function priceTurn(turn, prices) {
 	return { usd, cacheWriteUsd: cwUsd };
 }
 
+/**
+ * OpenCode message rows ({data, session_parent}) -> turns. `cost` is what OpenCode itself billed
+ * (for opencode-go models: the dollars the Go meter counts), kept as loggedCost. Pure.
+ */
+export function opencodeTurns(msgs) {
+	const out = [];
+	for (const m of msgs) {
+		let j; try { j = typeof m.data === "string" ? JSON.parse(m.data) : m.data; } catch { continue; }
+		if (j?.role !== "assistant" || !j.tokens || j.summary === true || j.mode === "compaction") continue;
+		const t = j.tokens;
+		out.push({
+			t: typeof j.time?.created === "number" ? j.time.created : ts(j.time?.created), backend: "opencode", model: `${j.providerID ?? "?"}/${j.modelID ?? "?"}`, id: String(m.id ?? j.id ?? `oc:${out.length}`),
+			input: num(t.input), cacheWrite5m: num(t.cache?.write), cacheWrite1h: 0, cacheRead: num(t.cache?.read), output: num(t.output) + num(t.reasoning),
+			subagent: !!m.session_parent, loggedCost: typeof j.cost === "number" ? j.cost : null,
+		});
+	}
+	return out;
+}
+
+/** opencode.db -> turns. Copies db + WAL first (the agent may be writing). [] when node:sqlite is missing. */
+export function readOpencodeTurns(dbPath) {
+	const sqlite = process.getBuiltinModule?.("node:sqlite");
+	if (!sqlite) return [];
+	const tmp = mkdtempSync(join(tmpdir(), "cost-ledger-oc-"));
+	try {
+		for (const ext of ["", "-wal", "-shm"]) if (existsSync(dbPath + ext)) copyFileSync(dbPath + ext, join(tmp, "opencode.db" + ext));
+		const db = new sqlite.DatabaseSync(join(tmp, "opencode.db"));
+		try {
+			return opencodeTurns(db.prepare("select m.id as id, m.data as data, s.parent_id as session_parent from message m join session s on s.id = m.session_id").all());
+		} finally { db.close(); }
+	} catch { return []; } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
 // ---------------------------------------------------------------------------
 // discovery
 // ---------------------------------------------------------------------------
@@ -228,7 +267,14 @@ export function logsIn(dir) {
 	const codex = walk(join(dir, "codex-sessions"), jsonl);
 	const agyT = (p, n) => n === "transcript.jsonl" && p.includes(`${sep}.system_generated${sep}`);
 	const antigravity = [...walk(join(dir, "gemini-antigravity-cli", "brain"), agyT), ...walk(join(dir, "antigravity-brain"), agyT)];
-	return { pi, claude, codex, antigravity };
+	const opencode = existsSync(join(dir, "opencode-home", "opencode.db")) ? [join(dir, "opencode-home", "opencode.db")] : [];
+	return { pi, claude, codex, antigravity, opencode };
+}
+
+/** OpenCode's shared login dir doubles as a session store when OPENCODE_CONFIG_DIR is used (launch-worker.sh). */
+function sharedOpencodeDb() {
+	const p = join(process.env.HARNESS_CONFIG_ROOT ?? join(process.env.HOME ?? "", ".harness", "config"), "opencode", "opencode.db");
+	return existsSync(p) ? p : null;
 }
 
 const PARSERS = { pi: parsePi, claude: parseClaude, codex: parseCodex, antigravity: parseAntigravity };
@@ -236,18 +282,24 @@ const PARSERS = { pi: parsePi, claude: parseClaude, codex: parseCodex, antigravi
 // ---------------------------------------------------------------------------
 // build + aggregate
 // ---------------------------------------------------------------------------
-export function buildLedger(repo, { days = 7, prices = loadPrices(), now = Date.now() } = {}) {
+export function buildLedger(repo, { days = 7, prices = loadPrices(), now = Date.now(), peak = loadPeakConfig(repo) } = {}) {
 	const since = now - days * 86400e3;
 	const rows = [];
 	const seen = new Set();
-	for (const { dir, name } of sessionDirs(repo)) {
-		const { role, change } = classifySession(name);
-		const files = logsIn(dir);
+	const dirs = sessionDirs(repo).map((d) => ({ ...d, cls: classifySession(d.name) }));
+	const shared = sharedOpencodeDb();
+	// shared store: no session dir to read role/change from - counted as unattributed worker turns
+	if (shared) dirs.push({ dir: null, name: "opencode-shared", cls: { role: "worker", change: null }, files: { opencode: [shared] } });
+	for (const { dir, name, cls, files: given } of dirs) {
+		const { role, change } = cls;
+		const files = given ?? logsIn(dir);
 		for (const [backend, paths] of Object.entries(files)) {
 			for (const f of paths) {
 				try { if (statSync(f).mtimeMs < since) continue; } catch { continue; }
-				let text; try { text = readFileSync(f, "utf8"); } catch { continue; }
-				for (const turn of PARSERS[backend](text.split(NL))) {
+				let turns;
+				if (backend === "opencode") turns = readOpencodeTurns(f);
+				else { let text; try { text = readFileSync(f, "utf8"); } catch { continue; } turns = PARSERS[backend](text.split(NL)); }
+				for (const turn of turns) {
 					if (turn.t != null && turn.t < since) continue;
 					const key = `${backend}:${turn.id}`;
 					if (!turn.id.includes(":") && seen.has(key)) continue; // real ids only: same message seen via two mounts
@@ -255,8 +307,9 @@ export function buildLedger(repo, { days = 7, prices = loadPrices(), now = Date.
 					const priced = priceTurn(turn, prices);
 					const usd = priced ? priced.usd : turn.loggedCost;
 					rows.push({
-						...turn, session: name, role, change, file: relative(repo, f),
+						...turn, session: name, role, change, file: f.startsWith(repo) ? relative(repo, f) : f,
 						peak: isPeak(turn.t),
+						windows: (peak.windows ?? []).filter((w) => appliesTo(w, { id: turn.model }) && inWindow(w, turn.t)).map((w) => w.id),
 						usd: usd == null ? null : Math.round(usd * 1e6) / 1e6,
 						cacheWriteUsd: priced ? Math.round(priced.cacheWriteUsd * 1e6) / 1e6 : null,
 						priceSource: priced ? "list" : turn.loggedCost != null ? "logged" : null,
@@ -283,20 +336,24 @@ export const METER_BACKENDS = {
 	claude_: (r) => r.backend === "claude" || /^(anthropic|claude)\//.test(r.model),
 	codex_: (r) => r.backend === "codex" || /^(openai-codex|codex)\//.test(r.model),
 	gemini_: (r) => r.backend === "antigravity",
+	opencodego_: (r) => /^opencode-go\//.test(r.model),
 };
 const meterMatcher = (key) => Object.entries(METER_BACKENDS).find(([p]) => key.startsWith(p))?.[1] ?? null;
 
 /**
  * $ per meter point, per quota key. Walks consecutive history points; a rise of d points between
  * t0 and t1 is paired with the priced spend of matching turns in (t0, t1]. Drops (resets) and
- * spans with unpriced turns are skipped. Split peak/off-peak by the span's end time. Pure.
+ * spans with unpriced turns are skipped. Split peak/off-peak by the span's end time, using the
+ * window that lists the key in its `meters` (peak-windows.json), else Anthropic's hours. Pure.
  */
-export function meterRates(rows, history) {
+export function meterRates(rows, history, peak = { windows: [] }) {
 	const out = {};
 	const keys = new Set(); for (const h of history) for (const k of Object.keys(h.q ?? {})) keys.add(k);
 	for (const key of keys) {
 		const match = meterMatcher(key);
 		if (!match) continue;
+		const win = (peak.windows ?? []).find((w) => (w.meters ?? []).includes(key));
+		const inPeak = (t) => (win ? inWindow(win, t) : isPeak(t));
 		const pts = history.filter((h) => typeof h.q?.[key] === "number").map((h) => ({ t: h.t, v: h.q[key] })).sort((a, b) => a.t - b.t);
 		const mine = rows.filter((r) => r.t != null && match(r));
 		const acc = { all: { usd: 0, pts: 0, spans: 0 }, peak: { usd: 0, pts: 0, spans: 0 }, offpeak: { usd: 0, pts: 0, spans: 0 }, skippedUnpriced: 0 };
@@ -307,16 +364,69 @@ export function meterRates(rows, history) {
 			if (!span.length) continue;
 			if (span.some((r) => r.usd == null)) { acc.skippedUnpriced++; continue; }
 			const usd = span.reduce((s, r) => s + r.usd, 0);
-			const bucket = isPeak(pts[i].t) ? acc.peak : acc.offpeak;
+			const bucket = inPeak(pts[i].t) ? acc.peak : acc.offpeak;
 			for (const b of [acc.all, bucket]) { b.usd += usd; b.pts += d; b.spans++; }
 		}
 		const rate = (b) => (b.pts > 0 ? Math.round((b.usd / b.pts) * 100) / 100 : null);
-		out[key] = { usdPerPoint: rate(acc.all), peakUsdPerPoint: rate(acc.peak), offpeakUsdPerPoint: rate(acc.offpeak), points: acc.all.pts, spans: acc.all.spans, skippedUnpriced: acc.skippedUnpriced };
+		out[key] = { window: win?.id ?? "anthropic", usdPerPoint: rate(acc.all), peakUsdPerPoint: rate(acc.peak), offpeakUsdPerPoint: rate(acc.offpeak), points: acc.all.pts, spans: acc.all.spans, skippedUnpriced: acc.skippedUnpriced };
 	}
 	return out;
 }
 
-export function summarize(rows, history = []) {
+/** Weighted tokens: the harness's usual price shape (fresh 1, cache write 1.25, cache read 0.1, output 5). */
+export const wtok = (r) => r.input + (r.cacheWrite5m + r.cacheWrite1h) * 1.25 + r.cacheRead * 0.1 + r.output * 5;
+
+/**
+ * Does a meter really move faster inside window w? For each meter key the window lists, walk
+ * consecutive usage-history points; keep a span when >= model_share of its weighted tokens come
+ * from the window's (non-free) models and >= 80% of them fell inside, or <= 20% (outside).
+ * ratio = (points per weighted Mtok inside) / (outside). 2x billing passed on reads ~2.
+ * clientRatio does the same with OpenCode's own logged cost per weighted token: ~2 means the
+ * client already prices the peak. Pure.
+ */
+export function windowTest(rows, history, w, test = DEFAULT_TEST) {
+	const T = { ...DEFAULT_TEST, ...test };
+	const res = {};
+	for (const key of w.meters ?? []) {
+		const match = meterMatcher(key);
+		if (!match) continue;
+		const pts = history.filter((h) => typeof h.q?.[key] === "number").map((h) => ({ t: h.t, v: h.q[key] })).sort((a, b) => a.t - b.t);
+		const mine = rows.filter((r) => r.t != null && match(r));
+		const side = () => ({ spans: 0, pts: 0, wt: 0, usd: 0, usdWt: 0 });
+		const acc = { inside: side(), outside: side(), mixed: 0, diluted: 0 };
+		for (let i = 1; i < pts.length; i++) {
+			const d = pts[i].v - pts[i - 1].v;
+			if (d <= 0) continue;
+			const span = mine.filter((r) => r.t > pts[i - 1].t && r.t <= pts[i].t);
+			const total = span.reduce((s, r) => s + wtok(r), 0);
+			if (!total) continue;
+			const win = span.filter((r) => appliesTo(w, { id: r.model }));
+			const winWt = win.reduce((s, r) => s + wtok(r), 0);
+			if (winWt / total < T.model_share) { acc.diluted++; continue; }
+			const insideWt = win.filter((r) => inWindow(w, r.t)).reduce((s, r) => s + wtok(r), 0) / winWt;
+			const b = insideWt >= 0.8 ? acc.inside : insideWt <= 0.2 ? acc.outside : null;
+			if (!b) { acc.mixed++; continue; }
+			b.spans++; b.pts += d; b.wt += total;
+			const logged = span.filter((r) => r.loggedCost != null);
+			b.usd += logged.reduce((s, r) => s + r.loggedCost, 0); b.usdWt += logged.reduce((s, r) => s + wtok(r), 0);
+		}
+		const per = (b) => (b.wt > 0 ? (b.pts / b.wt) * 1e6 : null);
+		const cpt = (b) => (b.usdWt > 0 && b.usd > 0 ? b.usd / b.usdWt : null);
+		const r2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
+		const ratio = per(acc.inside) && per(acc.outside) ? per(acc.inside) / per(acc.outside) : null;
+		const clientRatio = cpt(acc.inside) && cpt(acc.outside) ? cpt(acc.inside) / cpt(acc.outside) : null;
+		const enough = [acc.inside, acc.outside].every((b) => b.spans >= T.min_spans && b.pts >= T.min_points);
+		const verdict = !enough || ratio == null ? "insufficient" : ratio >= T.passes_through_ratio ? "passes_through" : ratio <= T.flat_ratio ? "flat" : "unclear";
+		res[key] = { verdict, ratio: r2(ratio), clientRatio: r2(clientRatio), inside: { spans: acc.inside.spans, points: r2(acc.inside.pts), ptsPerMwtok: r2(per(acc.inside)) },
+			outside: { spans: acc.outside.spans, points: r2(acc.outside.pts), ptsPerMwtok: r2(per(acc.outside)) }, mixedSpans: acc.mixed, dilutedSpans: acc.diluted };
+	}
+	// the window's verdict: the first meter (fastest first, as listed) with a real answer
+	const keys = Object.keys(res);
+	const best = keys.find((k) => res[k].verdict !== "insufficient") ?? keys[0] ?? null;
+	return { id: w.id, status: w.status, meter: best, verdict: best ? res[best].verdict : "no_meter_data", ratio: best ? res[best].ratio : null, clientRatio: best ? res[best].clientRatio : null, byMeter: res, at: Date.now() };
+}
+
+export function summarize(rows, history = [], peak = { windows: [], test: DEFAULT_TEST }) {
 	const s = { at: Date.now(), turns: rows.length, total: blank(), byRole: {}, byChange: {}, byModel: {}, byPeak: { peak: blank(), offpeak: blank() }, meters: {} };
 	for (const r of rows) {
 		add(s.total, r);
@@ -325,7 +435,13 @@ export function summarize(rows, history = []) {
 		add((s.byModel[`${r.backend} ${r.model}`] ??= blank()), r);
 		if (r.peak != null) add(s.byPeak[r.peak ? "peak" : "offpeak"], r);
 	}
-	s.meters = meterRates(rows, history);
+	s.meters = meterRates(rows, history, peak);
+	s.byWindow = {};
+	for (const w of peak.windows ?? []) {
+		const g = (s.byWindow[w.id] = { inside: blank(), outside: blank() });
+		for (const r of rows) if (appliesTo(w, { id: r.model }) && r.t != null) add(r.windows?.includes(w.id) ? g.inside : g.outside, r);
+	}
+	s.windowTests = Object.fromEntries((peak.windows ?? []).map((w) => [w.id, windowTest(rows, history, w, peak.test)]));
 	return s;
 }
 
@@ -362,7 +478,15 @@ export function render(s, days) {
 	L.push("API-equivalent $ per subscription meter point (harness sessions only - a lower bound)");
 	const ms = Object.entries(s.meters);
 	if (!ms.length) L.push("  (no usage-history yet - run `node scripts/route-worker.mjs --refresh-usage` periodically)");
-	for (const [k, m] of ms) L.push(`  ${k.padEnd(22)} all ${$(m.usdPerPoint)}  peak ${$(m.peakUsdPerPoint)}  off-peak ${$(m.offpeakUsdPerPoint)}  (${m.points} pts over ${m.spans} spans${m.skippedUnpriced ? `, ${m.skippedUnpriced} unpriced spans skipped` : ""})`);
+	for (const [k, m] of ms) L.push(`  ${k.padEnd(22)} all ${$(m.usdPerPoint)}  ${m.window ?? "anthropic"} peak ${$(m.peakUsdPerPoint)}  off-peak ${$(m.offpeakUsdPerPoint)}  (${m.points} pts over ${m.spans} spans${m.skippedUnpriced ? `, ${m.skippedUnpriced} unpriced spans skipped` : ""})`);
+	L.push("", "peak-window tests (does the meter move faster per token inside the window?)");
+	const wt = Object.values(s.windowTests ?? {});
+	if (!wt.length) L.push("  (no windows in herdr-plugin/peak-windows.json)");
+	for (const t of wt) {
+		const m = t.byMeter?.[t.meter];
+		L.push(`  ${t.id.padEnd(10)} ${t.verdict.padEnd(15)} ${t.meter ?? "-"}  ratio ${t.ratio ?? "-"}  client ${t.clientRatio ?? "-"}` + (m ? `  (inside ${m.inside.spans} spans/${m.inside.points} pts, outside ${m.outside.spans}/${m.outside.points}, ${m.mixedSpans} mixed, ${m.dilutedSpans} other-model spans skipped)` : ""));
+	}
+	L.push("  ratio ~2 = the provider's peak price reaches this meter; ~1 = it does not. 'measure' windows only steer routing once this says passes_through.");
 	L.push("", "cw% = share of $ spent on cache writes; sub% = share spent in Claude subagents.");
 	L.push("Codex and Antigravity do not report cache writes, so their cw% reads 0.");
 	return L.join(NL);
@@ -389,8 +513,9 @@ async function main() {
 	const repo = process.env.HARNESS_REPO_ROOT || resolve(HERE, "..");
 	const di = argv.indexOf("--days");
 	const days = di >= 0 ? Number(argv[di + 1]) : 7;
-	const rows = buildLedger(repo, { days });
-	const summary = summarize(rows, readHistory(repo));
+	const peak = loadPeakConfig(repo);
+	const rows = buildLedger(repo, { days, peak });
+	const summary = summarize(rows, readHistory(repo), peak);
 	const outDir = join(repo, ".pi-session", "routing");
 	mkdirSync(outDir, { recursive: true });
 	writeFileSync(join(outDir, "ledger.jsonl"), rows.map((r) => JSON.stringify(r)).join(NL) + (rows.length ? NL : ""));
@@ -487,6 +612,61 @@ function selftest() {
 	ok(s.byRole.worker.usd > 0 && s.byRole.planner.unpricedTokens === 1050, "unpriced tokens tracked separately");
 	ok(s.byChange["CHANGE-0001"].subagentUsd === s.byChange["CHANGE-0001"].usd, "subagent $ attributed");
 	ok(render(s, 7).includes("by role"), "render");
+
+	// OpenCode: message rows -> turns (time.created is epoch ms; reasoning counts as output)
+	const OC = opencodeTurns([
+		{ id: "msg_a", session_parent: null, data: J({ role: "assistant", providerID: "opencode-go", modelID: "deepseek-v4.1-flash", time: { created: Date.parse("2026-11-02T02:00:00Z") }, tokens: { input: 1000, output: 100, reasoning: 50, cache: { read: 20000, write: 0 } }, cost: 0.0042 }) },
+		{ id: "msg_b", session_parent: "ses_p", data: J({ role: "assistant", providerID: "opencode", modelID: "deepseek-v4.1-flash-free", time: { created: Date.parse("2026-11-02T05:00:00Z") }, tokens: { input: 10, output: 1, cache: { read: 0, write: 0 } }, cost: 0 }) },
+		{ id: "msg_u", data: J({ role: "user" }) },
+	]);
+	ok(OC.length === 2 && OC[0].model === "opencode-go/deepseek-v4.1-flash" && OC[0].output === 150 && OC[0].t === Date.parse("2026-11-02T02:00:00Z") && OC[0].loggedCost === 0.0042, `opencode turn (${J(OC[0])})`);
+	ok(OC[1].subagent === true, "opencode child session = subagent");
+	ok(METER_BACKENDS.opencodego_(OC[0]) && !METER_BACKENDS.opencodego_(OC[1]), "Go meter counts opencode-go models only, not Zen free");
+	// real opencode.db round trip (schema subset OpenCode uses)
+	const sqlite = process.getBuiltinModule?.("node:sqlite");
+	if (sqlite) {
+		const dir = mkdtempSync(join(tmpdir(), "cl-oc-test-"));
+		try {
+			const db = new sqlite.DatabaseSync(join(dir, "opencode.db"));
+			db.exec("create table session (id text primary key, parent_id text); create table message (id text primary key, session_id text, data text)");
+			db.prepare("insert into session values (?, ?)").run("ses_1", null);
+			db.prepare("insert into message values (?, ?, ?)").run("msg_a", "ses_1", J({ role: "assistant", providerID: "opencode-go", modelID: "deepseek-v4.1-flash", time: { created: 1 }, tokens: { input: 5, output: 1, cache: {} }, cost: 0.1 }));
+			db.close();
+			const R = readOpencodeTurns(join(dir, "opencode.db"));
+			ok(R.length === 1 && R[0].id === "msg_a" && R[0].input === 5, `readOpencodeTurns (${J(R)})`);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	}
+
+	// window test: DeepSeek window, Go meter moving 2x per token inside vs outside
+	const DS = { id: "deepseek", status: "measure", tz: "UTC", days: ["Mon", "Tue", "Wed", "Thu", "Fri"], hours: [[1, 4], [6, 10]], applies: { model: "deepseek" }, meters: ["opencodego_5h"] };
+	const mkTurn = (t, model = "opencode-go/deepseek-v4.1-flash") => ({ t, model, backend: "opencode", input: 100000, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, output: 0, loggedCost: null });
+	const synth = (insideRate, outsideRate) => {
+		const rows2 = [], hist = [];
+		let v = 0;
+		// Mon-Fri 2026-11-02..06: one 30-min span at 02:00Z (inside) and one at 12:00Z (outside) each day
+		for (let d = 0; d < 5; d++) for (const [hh, rate] of [[2, insideRate], [12, outsideRate]]) {
+			const t0 = Date.parse(`2026-11-0${2 + d}T${String(hh).padStart(2, "0")}:00:00Z`);
+			hist.push({ t: t0, q: { opencodego_5h: v } });
+			rows2.push(mkTurn(t0 + 60e3), mkTurn(t0 + 120e3));
+			v += rate; // 200k weighted tokens per span
+			hist.push({ t: t0 + 30 * 60e3, q: { opencodego_5h: v } });
+		}
+		return { rows2, hist };
+	};
+	let syn = synth(2, 1);
+	let wtres = windowTest(syn.rows2, syn.hist, DS);
+	ok(wtres.verdict === "passes_through" && wtres.ratio === 2 && wtres.byMeter.opencodego_5h.inside.spans === 5, `2x inside -> passes_through (${J(wtres)})`);
+	syn = synth(1, 1);
+	ok(windowTest(syn.rows2, syn.hist, DS).verdict === "flat", "same rate -> flat");
+	ok(windowTest(syn.rows2.slice(0, 4), syn.hist.slice(0, 4), DS).verdict === "insufficient", "too few spans -> insufficient");
+	// spans dominated by other Go models are skipped, not counted against DeepSeek
+	syn = synth(2, 1);
+	const other = syn.rows2.map((r) => ({ ...r, model: "opencode-go/kimi-k3.1-pro" }));
+	ok(windowTest(other, syn.hist, DS).byMeter.opencodego_5h.dilutedSpans === 10, "non-DeepSeek spans skipped");
+	// summary carries the tests, keyed by window
+	const sw = summarize(syn.rows2.map((r) => ({ ...r, role: "worker", windows: inWindow(DS, r.t) ? ["deepseek"] : [], usd: null, cacheWriteUsd: null })), syn.hist, { windows: [DS], test: DEFAULT_TEST });
+	ok(sw.windowTests.deepseek.verdict === "passes_through" && sw.byWindow.deepseek.inside.turns === 10 && sw.meters.opencodego_5h.window === "deepseek", "summary windowTests + byWindow + meter window");
+	ok(render(sw, 7).includes("peak-window tests"), "render window tests");
 
 	if (fails) { console.error(`${fails} cost-ledger self-test(s) FAILED`); return 1; }
 	console.log("cost-ledger self-test: all passed");

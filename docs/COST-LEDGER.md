@@ -42,6 +42,7 @@ the session dir, and the session-dir name carries the role and change:
 | Claude Code | `claude-projects/**.jsonl` | last record per message id; 5m/1h cache writes split; `isSidechain` = subagent |
 | Codex | `codex-sessions/**.jsonl` | `token_count` events; input includes cached; no cache-write count |
 | Antigravity | `gemini-antigravity-cli/brain/…/transcript.jsonl`, `antigravity-brain/…` | model from the Model-Selection announcement; no cache-write count |
+| OpenCode | `opencode-home/opencode.db`, plus the shared login dir's `opencode.db` | OpenCode's own billed `cost` kept as logged cost; reasoning counts as output; child sessions = subagents. Shared-store turns have no change id |
 
 Meters come from `.pi-session/routing/usage-history.jsonl`, which `route-worker.mjs
 --refresh-usage` appends to. The more often it runs, the finer the $/point spans.
@@ -58,4 +59,35 @@ and OpenCode models have no rows yet, so their turns show up as unpriced until y
   too, but only harness sessions are counted.
 - Codex and Antigravity report no cache writes, so their `cw%` reads 0. That means "not
   reported", not "none happened".
-- OpenCode's own CLI storage is not parsed yet. OpenCode models run through pi are covered.
+- OpenCode's shared session store has no session dir, so its turns count as unattributed
+  worker turns (no change id).
+- Peak-window spans are only as fine as the usage refreshes (the watcher refreshes at most every
+  5 minutes). Spans that straddle a window edge are counted as "mixed" and skipped.
+
+## Peak windows
+
+`herdr-plugin/peak-windows.json` lists provider peak hours (helpers in `scripts/peak-windows.mjs`;
+`node scripts/peak-windows.mjs` shows what is open now):
+
+| Window | Hours | Status | Router |
+|---|---|---|---|
+| Anthropic | weekdays 05–11 America/Los_Angeles | published | +3 cost on Claude models while open |
+| DeepSeek | weekdays 01–04 and 06–10 UTC (API bills 2×) | measure | nothing until the ledger confirms it |
+
+Every ledger row carries `windows` (the windows it fell in and that apply to its model). For each
+window the ledger runs a **window test** on that window's meters: it pairs meter rises with the
+weighted tokens spent in each span (fresh 1, cache write 1.25, cache read 0.1, output 5), keeps
+spans where at least 80% of the tokens came from the window's models, and compares meter points
+per weighted Mtok inside vs outside the window.
+
+- `ratio` ≈ 2: the provider's peak price reaches this meter → verdict `passes_through`.
+- `ratio` ≈ 1: it does not → `flat`.
+- `clientRatio`: the same comparison on OpenCode's own logged cost, which shows whether the
+  OpenCode client itself prices the peak.
+- Fewer than 5 spans (or 5 points) on either side → `insufficient`. Thresholds live in the
+  `test` block of the JSON.
+
+A `measure` window only steers routing once its verdict is `passes_through`. Free models are
+never penalised (their tokens do not draw on the Go dollar cap). The watcher rebuilds the ledger at
+most hourly, so the verdict the router reads is at most an hour old. The DeepSeek window's days
+are from codingplans.dev; check DeepSeek's pricing page and fix the JSON if they differ.
