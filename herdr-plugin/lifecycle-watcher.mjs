@@ -1553,6 +1553,10 @@ function remind(repoRoot, paneId, change) {
     if (!aw) return skip("no longer awaiting anyone");
     if (aw.reminded) return skip("already reminded once");
     if (!pane || !READY.has(pane.agent_status)) return skip(`pane is ${pane ? pane.agent_status : "gone"}`);
+    // The reminder was scheduled for THIS pane's role. If the handoff moved on in the meantime (the pane
+    // reported and the change now awaits another role), the reminder is stale: never send another role's
+    // reminder to this pane (2026-11-03, CHANGE-0045: planner got the integrator's reminder and re-filed doubts).
+    if (pane.role && pane.role !== aw.role) return skip(`now awaiting ${aw.role}, not this ${pane.role} pane`);
     const entries = readAllEntries(repoRoot).get(change) ?? [];
     if (entries.some((e) => e.role === aw.role && e.at > aw.since)) return skip(`${aw.role} reported in the meantime`);
     const text = fillTemplate(pipeline.reminder_prompt, { change, role: aw.role, allowed: VERDICTS_BY_ROLE[aw.role].join(" | "), report: `${pipeline.report_cmd ?? "node /repo/scripts/handoff.mjs report"} --change ${change}`, new: `${pipeline.new_cmd ?? "node /repo/scripts/handoff.mjs new"} --change ${change}` });
