@@ -43,6 +43,7 @@ import { join, dirname, resolve, basename } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadUsage, usageIsOld, decideForChange, loadCatalog, TIER_NAMES, scenariosForRepo } from "./route-worker.mjs";
+import { planForChange } from "./task-plan.mjs";
 import { loadPeakConfig, loadWindowVerdicts, inWindow, nextChange, windowEnforced } from "./peak-windows.mjs";
 import { discoverSessionDirs, aggregateSessionDir, mergeFleet } from "./fleet-status.mjs";
 import { discoverTrees, readAllEntries, readJson, statePath, eventsLogPath, lifecycleDir } from "./handoff.mjs";
@@ -128,6 +129,41 @@ function refreshUsageInBackground() {
 const pipelineJson = () => readJson(join(REPO, "herdr-plugin", "pipeline.json"), {}) ?? {};
 function tailFile(p, maxLines = 400) { try { const s = readFileSync(p, "utf8"); return s.split("\n").filter(Boolean).slice(-maxLines); } catch { return []; } }
 
+/**
+ * TASK PLAN: how a change's tasks.md splits into worker batches and which tier each would get
+ * (scripts/task-plan.mjs, shadow mode), plus the share of planned work on tier 1-2 across every
+ * plan logged so far. "Planned", not realized: the worker still runs the whole change on one model.
+ */
+export function taskPlanLines(changeId, plans, W, { plan = null } = {}) {
+	const L = [];
+	const p = plan ?? planForChange(REPO, changeId);
+	L.push(section(`TASK PLAN FOR ${changeId}`, W, c("yellow", "shadow") + c("gray", " · scripts/task-plan.mjs")));
+	if (p.error) L.push(c("yellow", `  ${p.error}`));
+	else if (!p.tasksFile) L.push(c("gray", "  no tasks.md - the whole change is routed as one unit"));
+	else {
+		const s = p.summary;
+		const cheap = s ? Math.round(s.cheapShare * 100) : 0;
+		L.push(`  ${p.lint.stats?.tasks ?? 0} tasks → ${c("bold", s?.batches ?? 0)} batches · ${c(cheap >= 50 ? "green" : "yellow", cheap + "%")} of the work on tier 1-2${s?.frontierPoints ? c("yellow", ` · ${s.frontierPoints} pt on tier 4`) : ""}`);
+		for (const b of p.batches) {
+			const pick = b.route.human ? c("yellow", "human") : b.route.wait ? c("yellow", "wait") : b.route.pick ? `${b.route.pick.id} ${c("gray", "t" + b.route.pick.tier)}` : "-";
+			L.push(`  ${pad(b.id, 4)}${pad(b.tasks.map((t) => t.id).join(","), 14)}${pad(c("cyan", b.categories.join("+")), 26)}${pad(b.points + " pt", 7)}${pick}`);
+			for (const n of b.notes) L.push(c("gray", `        ${n}`));
+		}
+		for (const e of p.lint.errors) L.push(c("red", `  ✗ ${e}`));
+		for (const w of p.lint.warnings) L.push(c("yellow", `  ! ${w}`));
+	}
+	// across all logged plans (latest per change): is the breakdown actually moving work to cheap tiers?
+	const latest = [...new Map(plans.filter((x) => x.summary).map((x) => [x.change, x])).values()];
+	if (latest.length) {
+		const pts = latest.reduce((a, x) => a + (x.summary.points ?? 0), 0);
+		const cheapPts = latest.reduce((a, x) => a + (x.summary.points ?? 0) * (x.summary.cheapShare ?? 0), 0);
+		const errs = latest.filter((x) => x.errors).length;
+		const over = latest.filter((x) => (x.warnings ?? []).some((w) => /over-split/.test(w))).length;
+		L.push(c("gray", `  all logged plans (${latest.length} changes): ${pts ? Math.round((cheapPts / pts) * 100) : 0}% of planned work on tier 1-2 · ${over} flagged over-split · ${errs} with lint errors`));
+	} else L.push(c("gray", "  no task plans logged yet - they appear at the next worker launch of a change with tasks.md"));
+	return L;
+}
+
 function collect() {
 	const trees = (() => { try { return discoverTrees(REPO); } catch { return []; } })();
 	const byChange = (() => { try { return readAllEntries(REPO, trees); } catch { return new Map(); } })();
@@ -139,7 +175,8 @@ function collect() {
 		return { id, list, last, st, done: last?.verdict === "merged" };
 	}).sort((a, b) => String(b.last?.at).localeCompare(String(a.last?.at)));
 	const decisions = tailFile(join(REPO, ".pi-session", "routing", "decisions.jsonl"), 50).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-	return { sidebar: readJson(join(lifecycleDir(REPO), "sidebar-last.json"), null), usage: loadUsage(REPO), catalog: loadCatalog(REPO), pipeline: pipelineJson(), changes, snapshot, decisions, events: tailFile(eventsLogPath(REPO), 300), tokens: loadTokenCache(REPO) };
+	const taskPlans = tailFile(join(REPO, ".pi-session", "routing", "task-plans.jsonl"), 200).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+	return { sidebar: readJson(join(lifecycleDir(REPO), "sidebar-last.json"), null), usage: loadUsage(REPO), catalog: loadCatalog(REPO), pipeline: pipelineJson(), changes, snapshot, decisions, taskPlans, events: tailFile(eventsLogPath(REPO), 300), tokens: loadTokenCache(REPO) };
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +411,8 @@ export function viewRouting(d, W, sel = 0) {
 		const mini = x.ok ? " " + c(picked ? "green" : "blue", "▮".repeat(Math.max(1, Math.round((1 - x.cost / (max + 1)) * 8)))) : "";
 		L.push(`  ${mark}${pad("t" + x.tier, 5)}${pad(name, 46)}${pad(c(m.cost === "metered" ? "yellow" : "gray", m.cost ?? ""), 9)}${sc}${pad(mini, 10)} ${pad(c("cyan", pub[x.id] ?? ""), 8)}${c("gray", x.why ?? "")}${m.visual ? c("magenta", " ◆visual") : ""}`);
 	}
+	L.push("");
+	L.push(...taskPlanLines(ch.id, d.taskPlans ?? [], W));
 	L.push("");
 	L.push(section("DECISION LOG", W, c("gray", ".pi-session/routing/decisions.jsonl")));
 	const dl = d.decisions.slice(-8).reverse();

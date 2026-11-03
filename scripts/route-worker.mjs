@@ -1001,7 +1001,7 @@ export function logDecision(repoRoot, rec) {
 	} catch { /* best effort */ }
 }
 
-function findChangeYaml(repoRoot, change) {
+export function findChangeYaml(repoRoot, change) {
 	const roots = [repoRoot];
 	try { for (const wt of readdirSync(join(repoRoot, ".worktrees"))) roots.push(join(repoRoot, ".worktrees", wt)); } catch { /* none */ }
 	let best = null;
@@ -1017,7 +1017,7 @@ function findChangeYaml(repoRoot, change) {
 	return best;
 }
 
-function ledgerEntries(repoRoot, change) {
+export function ledgerEntries(repoRoot, change) {
 	const files = [join(repoRoot, ".pi-session", "handoff", `${change}.jsonl`)];
 	try { for (const wt of readdirSync(join(repoRoot, ".worktrees"))) files.push(join(repoRoot, ".worktrees", wt, ".pi-session", "handoff", `${change}.jsonl`)); } catch { /* none */ }
 	return files.flatMap((f) => tailLines(f).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean)).sort((a, b) => String(a.at).localeCompare(String(b.at)));
@@ -1059,6 +1059,14 @@ function readPipeline(repoRoot) { return readJson(join(repoRoot, "herdr-plugin",
 /** Peak windows + the ledger's verdicts, for routeWorker's `peak`. Never throws. */
 export function loadPeak(repoRoot) {
 	try { return { config: loadPeakConfig(repoRoot), verdicts: loadWindowVerdicts(repoRoot) }; } catch { return null; }
+}
+
+/** The live inputs a launch decision uses (catalog, quotas, prices, records), minus the change itself. */
+export function routingContext(repoRoot) {
+	const pipeline = readPipeline(repoRoot);
+	return { catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot),
+		allowedBackends: pipeline.auto_backends ?? null, logins: detectLogins(repoRoot), limits: readJson(join(repoRoot, ".pi-session", "routing", "limits.json")) ?? [],
+		bench: readJson(join(repoRoot, ".pi-session", "routing", "bench.json")), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot) };
 }
 
 /** Everything from disk -> decision. Never throws. */

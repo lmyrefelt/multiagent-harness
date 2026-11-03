@@ -49,6 +49,7 @@ import * as nodeOs from "node:os";
 import { createConnection } from "node:net";
 import { readChangeConfig } from "../scripts/verify-change.mjs";
 import { decideForChange, logDecision, usageIsOld, loadUsage, loadCatalog } from "../scripts/route-worker.mjs";
+import { planForChange, logTaskPlan } from "../scripts/task-plan.mjs";
 import { superviseChange, pendingDeps, yamlReader, syncWorker, triageMarkdown, latestQualifyTail, eventsFor, writeTriage, buildStatus, writeStatus, digestText, digestDue, phaseOf, DEFAULTS as SUPERVISOR_DEFAULTS, detectLimit, backendOfAgent, recordLimit, loadLimits, pickFallbackBackend, capacity, windowResets, capacityMarkdown, waitOrMove, writeHandoffBrief, paceLevel, detectProviderError, providerErrorPersists, integratorUnresponsive, newestSessionLog, freshOrContinue, sessionHealth } from "../scripts/harness-supervisor.mjs";
 import { lastActivity, describeQuiet } from "../scripts/activity-probe.mjs";
 import { notifyRich, appInstalled as notifyAppInstalled } from "../scripts/notify.mjs";
@@ -1052,6 +1053,13 @@ export function reconcile(repoRoot, { echo = false } = {}) {
         if (d.role === "worker" && routingMode !== "off") {
           const rd = decideForChange(repoRoot, change, { entries });
           logDecision(repoRoot, { change, mode: routingMode, entry: d.entry.id, pick: rd.pick ?? null, escalateToHuman: !!rd.escalateToHuman, reason: rd.reason, size: rd.size, minTier: rd.minTier, visual: rd.visual, candidates: rd.candidates });
+          // Per-task routing (scripts/task-plan.mjs): always shadow for now - the worker still runs
+          // the whole change on the model above; this logs which batches WOULD run on which tier.
+          const tp = planForChange(repoRoot, change, { entries });
+          if (tp.tasksFile) {
+            logTaskPlan(repoRoot, tp, { entry: d.entry.id, changePick: rd.pick?.id ?? null });
+            say(`ROUTE-TASKS(shadow) ${tag}: ${tp.summary?.batches ?? 0} batches, ${Math.round((tp.summary?.cheapShare ?? 0) * 100)}% on tier 1-2${tp.lint.errors.length ? `, ${tp.lint.errors.length} lint error(s)` : ""} - ${tp.batches.map((b) => `${b.id}:${b.route.pick?.id ?? (b.route.human ? "human" : "-")}`).join(" ")}`);
+          }
           if (routingMode === "live") {
             if (rd.escalateToHuman) {
               notifyHuman(repoRoot, `${change}: plan approved, but no worker launched - ${rd.reason}.`);
