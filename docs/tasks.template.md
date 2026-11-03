@@ -70,6 +70,36 @@ check it against — revisit once a few changes have used this file for real).
   reliable, and would have flagged a piece of `CHANGE-0077`'s own work before a
   single line of code was written for it.
 
+## Category — which model tier a task gets (scripts/task-plan.mjs)
+
+Every task names its **Category**. The category sets the cheapest tier allowed to do it,
+and the router always takes the cheapest adequate model, so nothing runs higher than
+its category unless the change struggles (2 change requests = +1 tier, as for changes).
+
+| Category | Tier floor | Use for | Reason needed |
+|---|---|---|---|
+| `mechanical` | 1 (local/free) | rename, boilerplate, config, wiring, moving code, docs | no |
+| `local` | 2 (free/cheap) | logic inside one module, covered by its own tests | no |
+| `cross-cutting` | 3 (strong) | design across modules, security, concurrency, data model | **yes** |
+| `ui` | 3 (Sonnet-level) | layout, CSS, UI components | **yes** |
+| `art` | 3 + visual model (Opus/astra) | SVG, sprites, shaders, illustration | **yes** |
+
+`**Tier:** 4` (frontier) is allowed only on `cross-cutting` or `art` tasks, with a Reason.
+
+**Cheap by default.** If a strong task has a routine part (the wiring around a hard
+algorithm, the tests around a security fix), make that part its own `mechanical`/`local`
+task so it runs cheap and only the hard core needs the strong model.
+
+**But do not micro-split.** Each task that gets its own worker costs a briefing, a
+re-read of the code and a re-check by the integrator. Measured elsewhere, that overhead
+made delegation up to 30% *more* expensive on small jobs. So the router does not launch
+per task: it groups adjacent tasks of the same category into **batches** (up to one
+L-sized task of work), folds any batch smaller than one S task into its stronger
+neighbour, and folds any task without a **Check** into a neighbour too. Write a task as
+its own entry only when it has its own Check and is at least S-sized of real work.
+`node scripts/task-plan.mjs CHANGE-NNNN` shows the batches; `--lint` fails on missing
+categories or reasons and warns on over-splitting.
+
 ## Dependency order
 
 List tasks in implementation order — bottom-up (schema before the API that reads
@@ -85,6 +115,9 @@ vertical slice, whichever is sooner — not only at the very end.
 ### T<n> — <one-line description, no "and">
 
 **Status:** pending | in_progress | done
+**Category:** mechanical | local | cross-cutting | ui | art
+**Check:** the mechanical proof it is done - a command, a test id, "scene loads headless"
+**Reason:** only for cross-cutting / ui / art / Tier 4 - why a cheaper model cannot do it
 **Covers:** REQ-NNNN-00X, REQ-NNNN-00Y   (≤3 — split further if it needs a 4th)
 **Verified by:** the test case id(s) from change.yaml's tests.cases, e.g. T3, T7
 **Depends on:** T<n> | None
@@ -100,6 +133,8 @@ vertical slice, whichever is sooner — not only at the very end.
 ### T1 — Add the `directory` read model for HARNESS users
 
 **Status:** done
+**Category:** local
+**Check:** `pytest apps/api/tests/test_directory.py`
 **Covers:** REQ-0077-014
 **Verified by:** T4
 **Depends on:** None
@@ -109,6 +144,9 @@ vertical slice, whichever is sooner — not only at the very end.
 ### T2 — Enforce the visibility rule on item reads
 
 **Status:** in_progress
+**Category:** cross-cutting
+**Check:** tests T9, T11
+**Reason:** access control across reads and queries - a mistake leaks items
 **Covers:** REQ-0077-005, REQ-0077-006
 **Verified by:** T9, T11
 **Depends on:** T1
@@ -118,6 +156,8 @@ vertical slice, whichever is sooner — not only at the very end.
 ### T3 — Expose `/directory/me`
 
 **Status:** pending
+**Category:** mechanical
+**Check:** tests T6
 **Covers:** REQ-0077-016
 **Verified by:** T6
 **Depends on:** T1
