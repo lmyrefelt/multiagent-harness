@@ -43,7 +43,7 @@ import { join, dirname, resolve, basename } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { loadUsage, usageIsOld, decideForChange, loadCatalog, TIER_NAMES, scenariosForRepo } from "./route-worker.mjs";
-import { planForChange } from "./task-plan.mjs";
+import { planForChange, taskFloorResults } from "./task-plan.mjs";
 import { loadPeakConfig, loadWindowVerdicts, inWindow, nextChange, windowEnforced } from "./peak-windows.mjs";
 import { discoverSessionDirs, aggregateSessionDir, mergeFleet } from "./fleet-status.mjs";
 import { discoverTrees, readAllEntries, readJson, statePath, eventsLogPath, lifecycleDir } from "./handoff.mjs";
@@ -161,6 +161,31 @@ export function taskPlanLines(changeId, plans, W, { plan = null } = {}) {
 		const over = latest.filter((x) => (x.warnings ?? []).some((w) => /over-split/.test(w))).length;
 		L.push(c("gray", `  all logged plans (${latest.length} changes): ${pts ? Math.round((cheapPts / pts) * 100) : 0}% of planned work on tier 1-2 · ${over} flagged over-split · ${errs} with lint errors`));
 	} else L.push(c("gray", "  no task plans logged yet - they appear at the next worker launch of a change with tasks.md"));
+	return L;
+}
+
+/**
+ * TASK FLOOR RESULTS: changes whose worker tier came from their hardest task instead of their size,
+ * and how they did in review compared with the rest - so a lowered tier that keeps failing shows up.
+ */
+export function taskFloorResultLines(d, W, { results = null } = {}) {
+	const L = [];
+	const on = d.pipeline?.routing?.task_floor !== false;
+	L.push(section("TASK FLOOR RESULTS", W, c(on ? "green" : "gray", on ? "task_floor: on" : "task_floor: off") + c("gray", " · first launch per change, outcomes from the ledger")));
+	const res = results ?? (() => {
+		const all = tailFile(join(REPO, ".pi-session", "routing", "decisions.jsonl"), 5000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+		return taskFloorResults(all, new Map((d.changes ?? []).map((ch) => [ch.id, ch.list])));
+	})();
+	if (!res.rows.length) { L.push(c("gray", "  no worker launches decided yet")); return L; }
+	const row = (k, a) => `  ${pad(k, 16)}${pad(String(a.changes), 9)}${pad(String(a.reviewed), 10)}${pad(a.firstPassPct == null ? "-" : a.firstPassPct + "%", 12)}${pad(a.changeRequestsAvg == null ? "-" : String(a.changeRequestsAvg), 11)}${pad(String(a.escalated), 11)}${a.tiersSaved ? c("green", String(a.tiersSaved)) : c("gray", "-")}`;
+	L.push(c("gray", `  ${pad("", 16)}${pad("changes", 9)}${pad("reviewed", 10)}${pad("1st pass", 12)}${pad("chg req", 11)}${pad("escalated", 11)}tiers saved`));
+	for (const k of ["lowered", "same", "raised", "size only"]) if (res.byGroup[k]) L.push(row(k, res.byGroup[k]));
+	const cats = Object.entries(res.byCategory);
+	if (cats.length) { L.push(c("gray", "  by dominant task category")); for (const [k, a] of cats) L.push(row(k, a)); }
+	const lo = res.byGroup.lowered, rest = res.byGroup.same ?? res.byGroup["size only"];
+	if (lo?.reviewed >= 3 && rest?.reviewed >= 3 && lo.firstPassPct != null && rest.firstPassPct != null && lo.firstPassPct + 20 < rest.firstPassPct)
+		L.push(c("yellow", `  ! lowered-tier changes pass first review ${lo.firstPassPct}% vs ${rest.firstPassPct}% - check which categories fail before keeping task_floor on`));
+	else if ((lo?.reviewed ?? 0) < 3) L.push(c("gray", "  fewer than 3 reviewed lowered-tier changes - too early to judge"));
 	return L;
 }
 
@@ -413,6 +438,8 @@ export function viewRouting(d, W, sel = 0) {
 	}
 	L.push("");
 	L.push(...taskPlanLines(ch.id, d.taskPlans ?? [], W));
+	L.push("");
+	L.push(...taskFloorResultLines(d, W));
 	L.push("");
 	L.push(section("DECISION LOG", W, c("gray", ".pi-session/routing/decisions.jsonl")));
 	const dl = d.decisions.slice(-8).reverse();
@@ -1173,6 +1200,10 @@ function run() {
 }
 
 function selftest() {
+	{
+		const lines = taskFloorResultLines({ pipeline: { routing: { task_floor: true } }, changes: [] }, 100, { results: { rows: [{}], byGroup: { lowered: { changes: 2, reviewed: 2, merged: 1, firstPassPct: 50, changeRequestsAvg: 1, escalated: 1, tiersSaved: 3 } }, byCategory: { mechanical: { changes: 1, reviewed: 1, merged: 1, firstPassPct: 100, changeRequestsAvg: 0, escalated: 0, tiersSaved: 2 } } } }).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		if (!/lowered\s+2\s+2\s+50%/.test(lines) || !/mechanical/.test(lines) || !/too early/.test(lines)) { console.error("FAIL task floor results panel\n" + lines); process.exitCode = 1; }
+	}
 	let fails = 0;
 	const ok = (cond, m) => { if (!cond) { fails++; console.error("FAIL " + m); } };
 	ok(vlen(c("red", "abc")) === 3, "visible length ignores colour codes");

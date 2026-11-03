@@ -166,7 +166,9 @@
   "reminder_prompt": "[handoff] You went idle without recording a handoff for {change}. If your turn is finished: create your report with {new} --role {role}, fill every section, then run {report} --role {role} --verdict <one of: {allowed}> --file <that file>. If you are waiting for the owner, use --verdict question with the question in --note (no file needed).",
   "routing": {
     "mode": "shadow",
-    "_comment": "Worker model routing: shadow = decide + log only (.pi-session/routing/decisions.jsonl, events.log ROUTE(shadow)), live = launch what the router picks, off. Catalog: herdr-plugin/models.catalog.json. Explain a decision: node scripts/route-worker.mjs CHANGE-NNNN"
+    "_comment": "Worker model routing: shadow = decide + log only (.pi-session/routing/decisions.jsonl, events.log ROUTE(shadow)), live = launch what the router picks, off. Catalog: herdr-plugin/models.catalog.json. Explain a decision: node scripts/route-worker.mjs CHANGE-NNNN",
+    "task_floor": true,
+    "_task_floor": "true (owner, 2026-11-03): when a change has a lint-clean, categorized tasks.md, its worker's minimum tier is the tier its HARDEST task batch needs (scripts/task-plan.mjs) instead of the tier its overall size implies. High risk, visual work, the integrator's min_tier and escalation still raise it. false = route by size only. Effect is live wherever routing.mode is live."
   },
   "watchdog": {
     "enabled": true,

@@ -22,12 +22,14 @@
 //   node scripts/task-plan.mjs CHANGE-NNNN            explain the plan
 //   node scripts/task-plan.mjs CHANGE-NNNN --lint     exit 1 on errors (planner/integrator gate)
 //   node scripts/task-plan.mjs CHANGE-NNNN --json
+//   node scripts/task-plan.mjs --results          how routing by the hardest task held up in review
 //   node scripts/task-plan.mjs --selftest
 //
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import { readRoutingFacts, routeWorker, findChangeYaml, ledgerEntries, routingContext } from "./route-worker.mjs";
+import { roundsFromLedger } from "./model-outcomes.mjs";
 
 /**
  * Category -> minimum worker tier. The floor is also the default: routeWorker always takes
@@ -229,6 +231,46 @@ export function logTaskPlan(repoRoot, p, extra = {}) {
 	} catch { /* logging never blocks a launch */ }
 }
 
+// ---------------------------------------------------------------------------
+// results: did routing by the hardest task (instead of size) hold up in review?
+// ---------------------------------------------------------------------------
+/**
+ * Joins worker launch decisions (decisions.jsonl: sizeFloor, taskFloor, pick) with the ledger.
+ * One row per change, from its FIRST launch decision (later ones are relaunches/escalations).
+ * Groups: "lowered" (task floor < size floor), "same", "raised", "size only" (no usable tasks.md),
+ * and by the plan's dominant category. Everything is counted from the ledger, nothing assumed.
+ */
+export function taskFloorResults(decisions, entriesByChange) {
+	const first = new Map();
+	for (const d of decisions) if (d.change && !d.escalateToHuman && d.pick && !first.has(d.change)) first.set(d.change, d);
+	const rows = [];
+	for (const [change, d] of first) {
+		const entries = entriesByChange.get?.(change) ?? entriesByChange[change] ?? [];
+		const rounds = roundsFromLedger(entries).filter((r) => r.outcome && r.outcome !== "stalled");
+		const tf = d.taskFloor?.applies ? d.taskFloor : null;
+		const sizeFloor = d.sizeFloor ?? null;
+		const group = !tf || !sizeFloor ? "size only" : tf.tier < sizeFloor ? "lowered" : tf.tier > sizeFloor ? "raised" : "same";
+		rows.push({
+			change, group, sizeFloor, taskTier: tf?.tier ?? null, pickTier: d.pick?.tier ?? null, pick: d.pick?.id ?? null, dominant: tf?.dominant ?? null,
+			merged: entries.some((e) => e.verdict === "merged"),
+			reviewed: rounds.length > 0,
+			firstPass: rounds.length ? rounds[0].outcome === "accepted" || (rounds[0].outcome === "qualified" && rounds[1]?.outcome === "accepted") : null,
+			changeRequests: entries.filter((e) => e.verdict === "impl-changes-requested").length,
+			escalated: entries.filter((e) => e.verdict === "impl-changes-requested" || e.verdict === "qualification-failed").length >= 2,
+		});
+	}
+	const agg = (list) => {
+		const rev = list.filter((r) => r.reviewed);
+		return { changes: list.length, reviewed: rev.length, merged: list.filter((r) => r.merged).length,
+			firstPassPct: rev.length ? Math.round((rev.filter((r) => r.firstPass).length / rev.length) * 100) : null,
+			changeRequestsAvg: rev.length ? Math.round((rev.reduce((a, r) => a + r.changeRequests, 0) / rev.length) * 10) / 10 : null,
+			escalated: list.filter((r) => r.escalated).length,
+			tiersSaved: list.reduce((a, r) => a + (r.group === "lowered" ? r.sizeFloor - r.taskTier : 0), 0) };
+	};
+	const by = (key) => Object.fromEntries([...new Set(rows.map((r) => r[key]).filter(Boolean))].map((k) => [k, agg(rows.filter((r) => r[key] === k))]));
+	return { rows, all: agg(rows), byGroup: by("group"), byCategory: by("dominant") };
+}
+
 export function explainPlan(p) {
 	const L = [];
 	if (p.error) return `${p.change}: ${p.error}`;
@@ -302,6 +344,25 @@ function selftest() {
 	const hi = planTasks({ tasksText: T("T1", { Category: "mechanical", Size: "S", Check: "a" }), changeFacts: readRoutingFacts("risk:\n  tier: high\n"), ctx });
 	ok(hi.batches[0].route.pick?.tier >= 3, "high-risk change keeps its tier >= 3 floor for every batch");
 
+	// results
+	const E = (change, role, verdict, at) => ({ change, role, verdict, at });
+	const ledger = new Map([
+		["C1", [E("C1", "integrator", "plan-approved", "1"), E("C1", "worker", "impl-ready", "2"), E("C1", "integrator", "merged", "3")]],
+		["C2", [E("C2", "integrator", "plan-approved", "1"), E("C2", "worker", "impl-ready", "2"), E("C2", "integrator", "impl-changes-requested", "3"), E("C2", "worker", "impl-ready", "4"), E("C2", "integrator", "impl-changes-requested", "5")]],
+		["C3", [E("C3", "integrator", "plan-approved", "1")]],
+	]);
+	const dec = [
+		{ change: "C1", pick: { id: "free/flash", tier: 2 }, sizeFloor: 4, taskFloor: { applies: true, tier: 2, dominant: "mechanical" } },
+		{ change: "C1", pick: { id: "sub/opus", tier: 4 }, sizeFloor: 4 },
+		{ change: "C2", pick: { id: "free/flash", tier: 2 }, sizeFloor: 3, taskFloor: { applies: true, tier: 2, dominant: "local" } },
+		{ change: "C3", pick: { id: "sub/sonnet", tier: 3 }, sizeFloor: 3 },
+	];
+	const res = taskFloorResults(dec, ledger);
+	ok(res.rows.length === 3 && res.rows[0].pick === "free/flash", "one row per change, from its first launch");
+	ok(res.byGroup.lowered.changes === 2 && res.byGroup.lowered.firstPassPct === 50 && res.byGroup.lowered.tiersSaved === 3 && res.byGroup.lowered.escalated === 1, "lowered group: first-pass %, tiers saved, escalations");
+	ok(res.byGroup["size only"].reviewed === 0 && res.byGroup["size only"].firstPassPct === null, "unreviewed change does not count as a pass or a fail");
+	ok(res.byCategory.mechanical.firstPassPct === 100 && res.byCategory.local.firstPassPct === 0, "results per dominant category");
+
 	if (fails) { console.error(`\n${fails} self-test(s) FAILED`); process.exit(1); }
 	console.log("task-plan self-test: all passed");
 }
@@ -309,6 +370,18 @@ function selftest() {
 function main() {
 	const argv = process.argv.slice(2);
 	if (argv.includes("--selftest")) return selftest();
+	if (argv.includes("--results")) {
+		const root = process.env.HARNESS_REPO ?? execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
+		const dec = (() => { try { return readFileSync(join(root, ".pi-session", "routing", "decisions.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } })();
+		const changes = [...new Set(dec.map((d) => d.change).filter(Boolean))];
+		const res = taskFloorResults(dec, new Map(changes.map((c) => [c, ledgerEntries(root, c)])));
+		if (argv.includes("--json")) { console.log(JSON.stringify(res, null, 2)); return; }
+		for (const [title, g] of [["by routing", res.byGroup], ["by dominant category", res.byCategory]]) {
+			console.log(title);
+			for (const [k, a] of Object.entries(g)) console.log(`  ${k.padEnd(14)} ${a.changes} changes · ${a.reviewed} reviewed · first pass ${a.firstPassPct ?? "-"}% · ${a.changeRequestsAvg ?? "-"} change requests avg · ${a.escalated} escalated${a.tiersSaved ? ` · ${a.tiersSaved} tiers saved` : ""}`);
+		}
+		return;
+	}
 	const change = argv.find((a) => /^CHANGE-\d+/i.test(a));
 	if (!change) { console.error("usage: task-plan.mjs CHANGE-NNNN [--lint] [--json] | --selftest"); process.exit(2); }
 	const root = process.env.HARNESS_REPO ?? execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();

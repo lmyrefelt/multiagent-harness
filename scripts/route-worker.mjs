@@ -40,6 +40,7 @@ import { homedir } from "node:os";
 import { execFileSync, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { getSecret } from "./secrets.mjs";
+import { parseTasks, lintTasks, batchTasks } from "./task-plan.mjs";
 import { julesUsage, julesReady } from "./jules-worker.mjs";
 import { priceFor, scoresFor, loadPricing, DEFAULT_PLANS, pricingIsOld, refreshPricing } from "./plan-pricing.mjs";
 
@@ -297,7 +298,7 @@ export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usag
 	const difficulty = scoreDifficulty(facts, { planRounds });
 	const hint = facts.routing ?? {};
 	const size = SIZE_TIER[hint.complexity] ? hint.complexity : difficulty.size;
-	const vis = detectVisual(facts);
+	const vis = hint.task_floor?.visual ? { visual: true, why: `art task in tasks.md (${hint.task_floor.from ?? "task plan"})` } : detectVisual(facts);
 	const esc = escalationFrom(entries);
 	const reasons = [`size ${size}${SIZE_TIER[hint.complexity] ? " (integrator)" : ` (${difficulty.points} pts)`}`];
 
@@ -329,6 +330,13 @@ export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usag
 	// It SETS the minimum, so it can lower it; high risk and visual work raise it again below.
 	const byRisk = (catalog.min_tier_by_risk ?? DEFAULT_MIN_TIER_BY_RISK)[risk]?.[size];
 	if (byRisk && byRisk !== minTier) { minTier = byRisk; reasons.push(`${risk} risk ${size} -> tier >= ${byRisk}`); }
+	// Task floor (owner, 2026-11-03): a categorized, lint-clean tasks.md says what the HARDEST part
+	// needs, which is a better floor than the change's overall size (a big change of mechanical work
+	// does not need Opus). It REPLACES the size floor; high risk, visual work, the integrator's
+	// min_tier and escalation still raise it below.
+	const tf = hint.task_floor;
+	const sizeFloor = minTier;
+	if (tf?.tier && tf.tier !== minTier) { reasons.push(`tasks.md hardest batch -> tier >= ${tf.tier} (size alone: ${minTier})`); minTier = tf.tier; }
 	if (hint.min_tier) { minTier = Math.max(minTier, hint.min_tier); reasons.push(`integrator min_tier ${hint.min_tier}`); }
 	if (risk === "high" && minTier < 3) { minTier = 3; reasons.push("high risk -> tier >= 3"); }
 	if (vis.visual && minTier < 3) { minTier = 3; reasons.push("visual work -> strong visual model"); }
@@ -401,10 +409,10 @@ export function routeWorker({ facts, entries = [], planRounds = 0, catalog, usag
 			}
 		}
 	}
-	if (!pick) return { escalateToHuman: true, reason: `no model clears tier >= ${minTier}${vis.visual ? " + visual" : ""} with capacity left - ${reasons.join("; ")}`, size, risk, visual: vis, difficulty, escalation: esc, minTier, candidates: candidates.map(({ model, ...c }) => c) };
+	if (!pick) return { escalateToHuman: true, sizeFloor, reason: `no model clears tier >= ${minTier}${vis.visual ? " + visual" : ""} with capacity left - ${reasons.join("; ")}`, size, risk, visual: vis, difficulty, escalation: esc, minTier, candidates: candidates.map(({ model, ...c }) => c) };
 	const m = pick.model;
 	return {
-		escalateToHuman: false, size, risk, visual: vis, difficulty, escalation: esc, minTier,
+		escalateToHuman: false, size, risk, visual: vis, difficulty, escalation: esc, minTier, sizeFloor,
 		pick: { id: m.id, backend: pick.backend, model: pick.launchModel ?? m.model ?? (pick.backend === "pi" ? m.id : null), tier: m.tier, effort: effortFor({ size, risk, visual: vis.visual, escalated: esc.levels }) },
 		reason: `${m.id} via ${pick.backend} (tier ${m.tier}) - ${reasons.join("; ")}${pick.why ? `; ${pick.why}` : ""}`,
 		candidates: candidates.map(({ model, ...c }) => c),
@@ -1069,6 +1077,26 @@ export function routingContext(repoRoot) {
 		bench: readJson(join(repoRoot, ".pi-session", "routing", "bench.json")), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot) };
 }
 
+/**
+ * The tier the hardest batch in tasks.md needs (scripts/task-plan.mjs). Applies only when the
+ * plan exists and lints clean - a plan with errors (missing categories or reasons) is not
+ * trusted to lower anything, and the change routes by size as before.
+ */
+export function taskFloorFor(tasksFile) {
+	if (!existsSync(tasksFile)) return null;
+	try {
+		const tasks = parseTasks(readFileSync(tasksFile, "utf8"));
+		if (!tasks.length) return null;
+		const lint = lintTasks(tasks);
+		const batches = batchTasks(tasks);
+		const open = batches.length ? batches : batchTasks(tasks.map((t) => ({ ...t, status: "pending" })));
+		const top = open.reduce((a, b) => (b.floor > a.floor ? b : a), open[0]);
+		const mix = lint.stats?.byCategory ?? {};
+		return { applies: lint.errors.length === 0 && !!top, tier: top?.floor ?? null, visual: open.some((b) => b.visual), from: top ? `${top.id} ${top.categories.join("+")}` : null,
+			errors: lint.errors.length, categories: mix, dominant: Object.entries(mix).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null, strongShare: lint.stats?.strongShare ?? null };
+	} catch { return null; }
+}
+
 /** Everything from disk -> decision. Never throws. */
 export function decideForChange(repoRoot, change, { entries = null } = {}) {
 	try {
@@ -1077,7 +1105,9 @@ export function decideForChange(repoRoot, change, { entries = null } = {}) {
 		const all = entries ?? ledgerEntries(repoRoot, change);
 		const planRounds = all.filter((e) => e.verdict === "plan-changes-requested").length;
 		const pipeline = readPipeline(repoRoot);
-		return { change, change_yaml: f, ...routeWorker({ facts, entries: all, planRounds, catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot),
+		const taskFloor = pipeline.routing?.task_floor === false || !f ? null : taskFloorFor(join(dirname(f), "tasks.md"));
+		if (taskFloor?.applies) facts.routing.task_floor = taskFloor;
+		return { change, change_yaml: f, taskFloor, ...routeWorker({ facts, entries: all, planRounds, catalog: loadCatalog(repoRoot), usage: loadUsage(repoRoot), pricing: loadPricing(repoRoot),
 			allowedBackends: pipeline.auto_backends ?? null, logins: detectLogins(repoRoot), limits: readJson(join(repoRoot, ".pi-session", "routing", "limits.json")) ?? [], bench: readJson(join(repoRoot, ".pi-session", "routing", "bench.json")), outcomes: readJson(join(repoRoot, ".pi-session", "routing", "outcomes.json")), peak: loadPeak(repoRoot) }) };
 	} catch (e) {
 		return { change, escalateToHuman: false, error: String(e), reason: `router failed (${e.message}) - using the pinned backend`, pick: null };
@@ -1440,6 +1470,21 @@ function selftest() {
 	ok(eq.gemini_weekly?.usedPct === 22.4 && eq.agy3p_5h, "reads Gemini/Antigravity quota buckets");
 	const br = breakersFromLines([JSON.stringify({ t: now - 60e3, ev: "disconnect_recovery_deferred", errorMessage: "Upstream error from Nvidia: Service temporarily overloaded" })], catalog, now);
 	ok(br.nvidia.events === 1, "counts overload events per provider");
+
+	// task floor (tasks.md): the hardest batch replaces the size floor; high risk still wins
+	{
+		const big = readRoutingFacts(yaml().replace("tier: low", "tier: medium") + "\nrouting:\n  complexity: XL");
+		const plain = routeWorker({ facts: big, catalog, usage: base, now });
+		big.routing.task_floor = { tier: 2, visual: false, from: "B1 mechanical+local" };
+		const tfd = routeWorker({ facts: big, catalog, usage: base, now });
+		ok(plain.minTier === 4 && tfd.minTier === 2 && tfd.sizeFloor === 4 && tfd.pick.tier === 2, `XL change of mechanical/local tasks routes at tier 2, not 4 (${plain.minTier} -> ${tfd.minTier})`);
+		const hi = readRoutingFacts(yaml().replace("tier: low", "tier: high"));
+		hi.routing.task_floor = { tier: 1, visual: false };
+		ok(routeWorker({ facts: hi, catalog, usage: base, now }).minTier >= 3, "task floor never goes under the high-risk floor");
+		const art = readRoutingFacts(yaml());
+		art.routing.task_floor = { tier: 3, visual: true, from: "B2 art" };
+		ok(routeWorker({ facts: art, catalog, usage: base, now }).pick.model?.visual !== false && routeWorker({ facts: art, catalog, usage: base, now }).visual.visual, "an art batch makes the change visual");
+	}
 
 	if (fails) { console.error(`${fails} route-worker self-test(s) FAILED`); return 1; }
 	console.log("route-worker self-test: all passed");

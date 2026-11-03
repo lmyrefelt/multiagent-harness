@@ -1052,7 +1052,7 @@ export function reconcile(repoRoot, { echo = false } = {}) {
         const routingMode = pipeline.routing?.mode ?? "shadow";
         if (d.role === "worker" && routingMode !== "off") {
           const rd = decideForChange(repoRoot, change, { entries });
-          logDecision(repoRoot, { change, mode: routingMode, entry: d.entry.id, pick: rd.pick ?? null, escalateToHuman: !!rd.escalateToHuman, reason: rd.reason, size: rd.size, minTier: rd.minTier, visual: rd.visual, candidates: rd.candidates });
+          logDecision(repoRoot, { change, mode: routingMode, entry: d.entry.id, pick: rd.pick ?? null, escalateToHuman: !!rd.escalateToHuman, reason: rd.reason, size: rd.size, minTier: rd.minTier, sizeFloor: rd.sizeFloor ?? null, taskFloor: rd.taskFloor ?? null, visual: rd.visual, candidates: rd.candidates });
           // Per-task routing (scripts/task-plan.mjs): always shadow for now - the worker still runs
           // the whole change on the model above; this logs which batches WOULD run on which tier.
           const tp = planForChange(repoRoot, change, { entries });
