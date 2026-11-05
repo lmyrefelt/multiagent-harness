@@ -1,0 +1,65 @@
+# Dockerfile.vibe — Mistral Vibe CLI (`vibe`), as a guarded worker backend.
+#
+# FROM pi-contracts:latest (not a fresh base) for the same reason as every
+# other backend image: it inherits the baked-in checks.mjs engine at
+# /opt/contracts/extensions/checks.mjs that the host-side guard adapters
+# (scripts/*-guard-adapter.mjs, mounted at /repo at runtime) import.
+#
+# Vibe is a Python tool (needs Python >= 3.12), not a Node one. Install path
+# is `uv tool install mistral-vibe` - one of the three officially documented
+# routes (curl installer / uv / pip, github.com/mistralai/mistral-vibe README).
+# uv is chosen over the curl installer because it is the same thing the
+# installer wraps, but explicit: uv provisions its own managed Python 3.12,
+# so we don't depend on whatever python3 the node base image ships (if any).
+#
+# GUARD WIRING: NOT done here. Vibe's hook/permission model has not been
+# checked yet - no vibe-guard-adapter exists, and launch-worker.sh does not
+# know this backend. Until that adapter exists, treat this image as
+# unguarded and do not route real worker changes to it.
+#
+# Auth: MISTRAL_API_KEY in the environment (takes precedence over
+# ~/.vibe/.env). Config lives in ~/.vibe/ (overridable via VIBE_HOME) -
+# pre-created below as the node user so an optional bind mount doesn't get
+# auto-created root-owned (same gotcha Dockerfile.agy/codex/opencode hit).
+#
+#   docker build -f docker/Dockerfile.vibe -t harness-vibe:latest .   (context: the host project)
+FROM pi-contracts:latest
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
+# gh: wanted in all harness images (mainly integrator/planner, but kept
+# consistent). Official apt repo per cli.github.com.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# corepack: same gap found on every other backend's real launch (worker test
+# commands run `corepack pnpm --filter harness-web test ...`).
+RUN npm install -g corepack@latest && corepack enable
+
+USER node
+# uv (official installer, lands in ~/.local/bin), then vibe via uv with a
+# uv-managed Python 3.12. Always latest, like the other agents.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/node/.local/bin:${PATH}"
+RUN uv tool install --python 3.12 mistral-vibe
+
+# Fail the build if vibe isn't runnable through the SAME login shell the
+# entrypoint uses (lesson from Dockerfile.opencode: built fine, every launch
+# died with "command not found").
+RUN bash --login -c 'command -v vibe && vibe --version'
+
+# Mount target for an optional ~/.vibe config/.env bind mount.
+RUN mkdir -p /home/node/.vibe
+
+WORKDIR /workspace
+# Forwards trailing CMD args into the inner `vibe` invocation ($@) - same
+# pattern as the other Dockerfiles (e.g. `--auto-approve "<seed message>"`
+# or `--prompt "..."` for programmatic mode).
+ENTRYPOINT ["/bin/bash", "--login", "-c", "vibe \"$@\"", "--"]
