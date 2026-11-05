@@ -39,9 +39,20 @@
 //   node scripts/vibe-completion-gate.mjs --selftest
 //
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { evaluateCompletionGate, loadAttempts } from "./completion-gate-core.mjs";
-import { counterStatePath, readStdin } from "./verify-change.mjs";
+// Local copies of verify-change.mjs's small helpers, so this file also works
+// in projects bootstrapped before verify-change.mjs exported them.
+async function readStdin() {
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  return raw;
+}
+function counterStatePath(prefix, id) {
+  const evidence = process.env.CONTRACT_EVIDENCE;
+  const dir = evidence ? dirname(evidence) : ".";
+  return join(dir, `${prefix}-${id || "default"}.json`);
+}
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 

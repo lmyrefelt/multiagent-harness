@@ -53,8 +53,27 @@
 //   node scripts/vibe-guard-adapter.mjs < envelope.json
 //   node scripts/vibe-guard-adapter.mjs --selftest
 //
-import { readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, rmdirSync, statSync, renameSync } from "node:fs";
-import { loadCounters, counterStatePath, readStdin } from "./verify-change.mjs";
+import { readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, rmdirSync, statSync, renameSync, existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+
+// Local copies of verify-change.mjs's small helpers, so this file also works
+// in projects bootstrapped before verify-change.mjs exported them.
+async function readStdin() {
+  let raw = "";
+  for await (const chunk of process.stdin) raw += chunk;
+  return raw;
+}
+function counterStatePath(prefix, id) {
+  const evidence = process.env.CONTRACT_EVIDENCE;
+  const dir = evidence ? dirname(evidence) : ".";
+  return join(dir, `${prefix}-${id || "default"}.json`);
+}
+function loadCounters(path, newCounters) {
+  if (existsSync(path)) {
+    try { return JSON.parse(readFileSync(path, "utf8")); } catch { /* fall through to fresh */ }
+  }
+  return newCounters();
+}
 
 const CHECKS_MJS = process.env.CHECKS_MJS_PATH || "/opt/contracts/extensions/checks.mjs";
 const MISSING_PATH = "__vibe_adapter_missing_path__";
