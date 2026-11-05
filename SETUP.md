@@ -117,6 +117,7 @@ cd ~/projects/my-new-project
 docker build -f docker/Dockerfile.claude   -t <slug>-claude:latest .
 docker build -f docker/Dockerfile.codex    -t <slug>-codex:latest .
 docker build -f docker/Dockerfile.opencode -t <slug>-opencode:latest .
+docker build -f docker/Dockerfile.vibe     -t <slug>-vibe:latest .
 docker build -f docker/Dockerfile.agy      -t <slug>-agy:latest .
 ```
 

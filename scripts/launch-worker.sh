@@ -9,7 +9,7 @@
 # /workspace — and the container is mounted on THAT. The main checkout is never
 # touched, so the integrator keeps it on `main`.
 #
-#   scripts/launch-worker.sh CHANGE-0003 [label] [pi|antigravity|claude|codex|opencode] [--dry-run]
+#   scripts/launch-worker.sh CHANGE-0003 [label] [pi|antigravity|claude|codex|opencode|vibe] [--dry-run]
 #     backend defaults to pi. antigravity reuses the SAME translation layer
 #     the integrator already uses (scripts/antigravity-guard-adapter.mjs,
 #     Dockerfile.agy -> harness-agy:latest, itself FROM pi-contracts:latest -
@@ -51,6 +51,14 @@
 #     backend: OpenCode Zen's free tier (several free models, no card
 #     required) - OPENCODE_CONFIG_DIR mirrors pi's PI_CONFIG_DIR convention
 #     for reusing a pre-authenticated auth.json across launches.
+#     vibe (Mistral Vibe CLI, Dockerfile.vibe -> harness-vibe:latest) uses
+#     the SAME checks.mjs engine via scripts/vibe-guard-adapter.mjs as a
+#     strict pre_tool hook (fails CLOSED if the adapter breaks), plus
+#     scripts/vibe-completion-gate.mjs (post_agent) and loop-guard-hook.mjs
+#     vibe (post_tool). No bind mounts: VIBE_HOME points at a per-launch dir
+#     under the session folder (already on /repo) holding the generated
+#     config.toml + hooks.toml, and Vibe's own session logs land there too.
+#     Key: MISTRAL_API_KEY from the Keychain (harness.mistral, scripts/secrets.mjs).
 #
 
 # Env overrides (all optional):
@@ -163,7 +171,8 @@ DRY=0
 for a in "$@"; do
   case "$a" in
     -n|--dry-run) DRY=1 ;;
-    pi|antigravity|agy|claude|codex|opencode) BACKEND="$a" ;;
+    pi|antigravity|agy|claude|codex|opencode|vibe) BACKEND="$a" ;;
+    mistral) BACKEND="vibe" ;;
     --*) echo "unknown flag: $a" >&2; exit 1 ;;
     *) LABEL="$a" ;;
   esac
@@ -177,6 +186,7 @@ case "$BACKEND" in
   claude)      IMAGE="${IMAGE:-harness-claude:latest}" ;;
   codex)       IMAGE="${IMAGE:-harness-codex:latest}" ;;
   opencode)    IMAGE="${IMAGE:-harness-opencode:latest}" ;;
+  vibe)        IMAGE="${IMAGE:-harness-vibe:latest}" ;;
 esac
 EXTENSION="${EXTENSION:-/opt/contracts/extensions/contract-guard.ts}"
 LLM="${LOCAL_LLM_BASE_URL:-http://host.docker.internal:8001/v1}"
@@ -195,6 +205,7 @@ case "$BACKEND" in
   claude)      HERDR_AGENT_DEFAULT="claude" ;;
   codex)       HERDR_AGENT_DEFAULT="codex" ;;
   opencode)    HERDR_AGENT_DEFAULT="opencode" ;;
+  vibe)        HERDR_AGENT_DEFAULT="vibe" ;;   # UNVERIFIED - no Herdr manifest confirmed; override with HERDR_AGENT=
 esac
 export HERDR_AGENT="${HERDR_AGENT:-$HERDR_AGENT_DEFAULT}"  # see header; inherited by `exec docker run` below
 
@@ -214,6 +225,7 @@ if [ -n "${HARNESS_ROUTED_MODEL:-}" ]; then
     claude) HARNESS_CLAUDE_MODEL="$HARNESS_ROUTED_MODEL" ;;
     opencode) OPENCODE_MODEL="$HARNESS_ROUTED_MODEL" ;;
     codex)  CODEX_MODEL="$HARNESS_ROUTED_MODEL" ;;
+    vibe)   VIBE_MODEL="$HARNESS_ROUTED_MODEL" ;;
   esac
   echo "routing   : $HARNESS_ROUTED_MODEL on $BACKEND - ${HARNESS_ROUTED_WHY:-picked by the router}"
 fi
@@ -339,6 +351,7 @@ else
   [ "$BACKEND" = "claude" ] && DOCKERFILE="Dockerfile.claude"
   [ "$BACKEND" = "codex" ] && DOCKERFILE="Dockerfile.codex"
   [ "$BACKEND" = "opencode" ] && DOCKERFILE="Dockerfile.opencode"
+  [ "$BACKEND" = "vibe" ] && DOCKERFILE="Dockerfile.vibe"
   if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "REFUSING: image '$IMAGE' does not exist. Build it first:" >&2
     echo "  docker build -f $DOCKERFILE -t $IMAGE ." >&2
@@ -422,6 +435,7 @@ SESSION_LOG_OUT="${SESSION_LOG_OUT:-1}"
 CLAUDE_PROJECTS_REL="$SESSION_REL/claude-projects"
 CODEX_SESSIONS_REL="$SESSION_REL/codex-sessions"
 OPENCODE_HOME_REL="$SESSION_REL/opencode-home"
+VIBE_HOME_REL="$SESSION_REL/vibe-home"
 
 if [ "$DRY" -eq 0 ]; then
   mkdir -p "$WORKTREES_DIR"
@@ -988,6 +1002,98 @@ EOF
   # separate, one-shot headless subcommand this deliberately avoids (same
   # distinction as codex exec / claude -p).
   args+=(--prompt "$SEED")
+elif [ "$BACKEND" = "vibe" ]; then
+  # Mistral Vibe CLI. Hooks are external commands reading JSON on stdin (like
+  # codex/claude); all three are VERIFIED against a real vibe 3.1.0 run, not
+  # just its docs - see each script's header:
+  #   pre_tool   -> vibe-guard-adapter.mjs, strict = true: Vibe fails OPEN on a
+  #                 broken hook by default; strict turns a crash into a deny.
+  #                 Runs before Vibe's approval step, so --auto-approve does
+  #                 not skip it (measured: a denied write/edit never lands,
+  #                 including calls made from inside a run_typescript program).
+  #   post_tool  -> loop-guard-hook.mjs vibe (advisory, fails open).
+  #   post_agent -> vibe-completion-gate.mjs, match = "main" (not subagents).
+  #                 NOTE: Vibe caps post_agent retries at 3 per turn, then
+  #                 accepts the answer - the gate's own attempts counter keeps
+  #                 counting across turns, but a model that ignores the gate 3
+  #                 times in one turn gets through that turn.
+  # No bind mounts: VIBE_HOME is a per-launch dir in the session folder,
+  # already on the /repo mount. Vibe reads config.toml + hooks.toml from it
+  # and writes its own session store under it (logs/session/), so session
+  # history persists with the worktree like the other backends'.
+  VIBE_HOME_IN="/repo/$WT_REL/$VIBE_HOME_REL"
+  HOOK_ENV="CONTRACT_GUARDS=/repo/$WT_REL/$GUARDS CONTRACT_EVIDENCE=/repo/$WT_REL/$EVIDENCE REPO_ROOT=/repo/$WT_REL"
+  VIBE_MODEL="${VIBE_MODEL:-}"
+  if [ "$DRY" -eq 0 ]; then
+    mkdir -p "$WT/$VIBE_HOME_REL"
+    {
+      echo "# Generated by scripts/launch-worker.sh for $NAME - regenerated every launch."
+      echo "enable_update_checks = false   # image is rebuilt by ensure-image.sh; no prompt in an unattended pane"
+      echo "enable_telemetry = false"
+      echo "enable_connectors = false      # worker scope is the repo; Mistral account connectors stay out"
+      echo "enable_notifications = false"
+      if [ -n "$VIBE_MODEL" ] || [ -n "$EFFORT" ]; then
+        # Model: the router's pick (HARNESS_ROUTED_MODEL) or VIBE_MODEL from
+        # .pi/worker.env, as a Mistral API model id (e.g. devstral-medium-latest).
+        # Unset -> Vibe's own default model; effort alone still applies to it.
+        M="${VIBE_MODEL:-mistral-vibe-cli-latest}"
+        A="${VIBE_MODEL:-mistral-medium-3.5}"
+        echo "active_model = \"$A\""
+        echo ""
+        echo "[[models]]"
+        echo "name = \"$M\""
+        echo "provider = \"mistral\""
+        echo "alias = \"$A\""
+        [ -n "$EFFORT" ] && echo "thinking = \"$EFFORT\""
+      fi
+    } > "$WT/$VIBE_HOME_REL/config.toml"
+    cat > "$WT/$VIBE_HOME_REL/hooks.toml" <<EOF
+# Generated by scripts/launch-worker.sh for $NAME - regenerated every launch.
+[[hooks]]
+name = "contract-guard"
+type = "pre_tool"
+strict = true
+timeout = 30
+description = "Worker contract guards (checks.mjs) - fails closed"
+command = "$HOOK_ENV node /repo/scripts/vibe-guard-adapter.mjs"
+
+[[hooks]]
+name = "loop-guard"
+type = "post_tool"
+timeout = 30
+command = "LOOP_GUARD=${LOOP_GUARD:-shadow} HARNESS_CHANGE=$CHANGE PI_ROLE=worker $HOOK_ENV node /repo/scripts/loop-guard-hook.mjs vibe"
+
+[[hooks]]
+name = "completion-gate"
+type = "post_agent"
+match = "main"
+timeout = 30
+command = "$HOOK_ENV node /repo/scripts/vibe-completion-gate.mjs"
+EOF
+  fi
+  # Key from the Keychain (harness.mistral) into THIS container only, passed by
+  # name so it never shows on the docker command line.
+  if [ -z "${MISTRAL_API_KEY:-}" ]; then
+    MISTRAL_API_KEY="$(node "$REPO/scripts/secrets.mjs" get mistral 2>/dev/null || true)"; export MISTRAL_API_KEY
+  fi
+  if [ -z "${MISTRAL_API_KEY:-}" ] && [ "$DRY" -eq 0 ]; then
+    echo "REFUSING: no Mistral key. Store it once: security add-generic-password -U -s harness.mistral -a \"\$USER\" -w" >&2
+    exit 1
+  fi
+  args=(docker run --rm -it --network host
+    --name "$NAME"
+    -v "$REPO:/repo" -w "/repo/$WT_REL"
+    -e PI_ROLE=worker
+    "${DIFF_ENV[@]}"
+    -e VIBE_HOME="$VIBE_HOME_IN"
+    -e MISTRAL_API_KEY
+    "$IMAGE"
+    # --trust: the worktree's own .vibe/ (if a change ever adds one) loads
+    # without an interactive trust prompt - one invocation only, not persisted.
+    --trust --auto-approve
+    # Trailing positional = interactive session seeded with this first
+    # message (vibe [PROMPT]); -p would be the one-shot headless mode instead.
+    "$SEED")
 fi
 
 echo "herdr     : HERDR_AGENT=$HERDR_AGENT exported (no-op unless a Herdr pane is watching this process)"
@@ -1066,6 +1172,15 @@ elif [ "$BACKEND" = "codex" ]; then
   echo "WARNING: github.com/openai/codex#27833 (OPEN) - a hook's deny for apply_patch is not always"
   echo "         enforced on some platforms. VERIFY against the filesystem + evidence.jsonl, not just"
   echo "         this adapter's own JSON output, before trusting file_boundary on this backend."
+elif [ "$BACKEND" = "vibe" ]; then
+  echo "vibe home : $WT/$VIBE_HOME_REL -> VIBE_HOME (config.toml + hooks.toml generated; session logs persist here)"
+  echo "            pre_tool (strict) -> scripts/vibe-guard-adapter.mjs (same guards.json, checks.mjs; fails CLOSED)"
+  echo "            post_tool -> scripts/loop-guard-hook.mjs vibe (LOOP_GUARD=${LOOP_GUARD:-shadow})"
+  echo "            post_agent (main) -> scripts/vibe-completion-gate.mjs (fails OPEN; Vibe caps retries at 3/turn)"
+  echo "mode      : --auto-approve --trust (pre_tool runs before approval - measured, not inferred)"
+  echo "seed      : trailing positional arg (vibe \"prompt\") - interactive session, not -p"
+  echo "model     : ${VIBE_MODEL:-vibe default (mistral-medium-3.5)}${EFFORT:+, thinking=$EFFORT}"
+  echo "auth      : MISTRAL_API_KEY by name (Keychain harness.mistral via scripts/secrets.mjs)"
 else
   echo "plugin    : $PLUGIN_REL   (in-process hook, no bind mount at all - see Dockerfile.opencode)"
   echo "            tool.execute.before -> scripts/opencode-guard-adapter.mjs (same guards.json, checks.mjs)"

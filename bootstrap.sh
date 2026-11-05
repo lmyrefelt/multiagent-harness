@@ -133,6 +133,7 @@ pi-integrator:latest=>${SLUG}-pi-integrator:latest
 harness-claude:latest=>${SLUG}-claude:latest
 harness-codex:latest=>${SLUG}-codex:latest
 harness-opencode:latest=>${SLUG}-opencode:latest
+harness-vibe:latest=>${SLUG}-vibe:latest
 harness-agy:latest=>${SLUG}-agy:latest
 harness-worker-=>${SLUG}-worker-
 harness-planner-=>${SLUG}-planner-

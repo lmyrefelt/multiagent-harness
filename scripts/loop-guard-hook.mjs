@@ -91,8 +91,39 @@ function fileHash(core, repoRoot, rel) {
 	try { return core.sha(readFileSync(abs)); } catch { return null; } // null = deleted / unreadable
 }
 
+/**
+ * Mistral Vibe post_tool envelope -> the Claude-shaped fields toLoopEvents reads.
+ * MEASURED (vibe 3.1.0, real run): tool_name is qualified (file_system.bash,
+ * file_system.write_file, file_system.edit); bash tool_output is structured
+ * {command, stdout, stderr, returncode, ...} and a non-zero exit is still
+ * tool_status "success" - so the exit code comes from returncode, never from
+ * parsing text; tool_status "failure" + tool_error when the tool itself failed.
+ */
+export function fromVibe(env) {
+	const raw = String(env.tool_name ?? "");
+	const short = raw.startsWith("mcp_") ? raw : raw.slice(raw.lastIndexOf(".") + 1);
+	const name = { bash: "Bash", git_bash: "Bash", process_start: "Bash", start: "Bash",
+		write_file: "Write", edit: "Edit" }[short] ?? raw;
+	const out = env.tool_output && typeof env.tool_output === "object" ? env.tool_output : null;
+	const failure = env.tool_status === "failure";
+	return {
+		...env,
+		tool_name: name,
+		tool_response: failure ? undefined : (out ?? env.tool_output_text),
+		error: failure ? (env.tool_error ?? env.tool_output_text ?? "tool failed") : undefined,
+		hook_event_name: failure ? "PostToolUseFailure" : "PostToolUse",
+		vibe_exit_code: !failure && typeof out?.returncode === "number" ? out.returncode : null,
+	};
+}
+
 /** Envelope -> list of loop-checks events. Exported for verify-loop-guard.mjs. */
 export function toLoopEvents(core, backend, env, repoRoot) {
+	if (backend === "vibe") {
+		const v = fromVibe(env);
+		const evs = toLoopEvents(core, "claude", v, repoRoot);
+		for (const e of evs) if (e.kind === "shell" && v.vibe_exit_code !== null) e.exitCode = v.vibe_exit_code;
+		return evs;
+	}
 	const tool = String(env.tool_name ?? "");
 	const input = env.tool_input ?? {};
 	const out = textOf(env.tool_response ?? env.error);
@@ -136,6 +167,8 @@ export async function run(backend, raw) {
 	}
 	writeState(sp, state);
 	if (!best || cfg.mode !== "on") return null;
+	// Vibe: post_tool's hook_specific_output.additional_context appends to the result.
+	if (backend === "vibe") return { hook_specific_output: { additional_context: best.message } };
 	return {
 		hookSpecificOutput: {
 			hookEventName: env.hook_event_name || "PostToolUse",
@@ -152,7 +185,7 @@ if (isMain) {
 		selftest();
 		process.exit(0);
 	}
-	const backend = process.argv[2] === "claude" ? "claude" : "codex";
+	const backend = ["claude", "vibe"].includes(process.argv[2]) ? process.argv[2] : "codex";
 	let raw = "";
 	try { raw = readFileSync(0, "utf8"); } catch { /* no stdin */ }
 	try {
@@ -213,6 +246,28 @@ function selftest() {
 		tool_input: { file_path: "/repo/src/main.js" }
     }, "/repo");
 	ok(evs.length === 1 && evs[0].kind === "edit" && evs[0].path === "src/main.js", "write absolute path resolved to relative");
+
+	// 5. Vibe shapes (measured on vibe 3.1.0): exit code from returncode, not text
+	evs = toLoopEvents(core, "vibe", {
+		hook_event_name: "post_tool", tool_name: "file_system.bash",
+		tool_input: { command: "npm test", timeout: 120 }, tool_status: "success",
+		tool_output: { command: "npm test", stdout: "boom", stderr: "", returncode: 2 },
+	}, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "shell" && evs[0].exitCode === 2 && evs[0].isTest === true && evs[0].output.includes("boom"), "vibe bash: exit code from returncode");
+
+	evs = toLoopEvents(core, "vibe", {
+		tool_name: "file_system.bash", tool_input: { command: "x" }, tool_status: "failure", tool_error: "timed out",
+	}, "/repo");
+	ok(evs.length === 1 && evs[0].failed === true && evs[0].output === "timed out", "vibe tool failure -> failed shell event");
+
+	evs = toLoopEvents(core, "vibe", { tool_name: "file_system.edit", tool_input: { file_path: "/repo/src/a.gd" }, tool_status: "success" }, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "edit" && evs[0].path === "src/a.gd", "vibe edit -> edit event");
+
+	evs = toLoopEvents(core, "vibe", { tool_name: "file_system.write_file", tool_input: { file_path: "b.txt" }, tool_status: "success" }, "/repo");
+	ok(evs.length === 1 && evs[0].kind === "edit" && evs[0].path === "b.txt", "vibe write_file -> edit event");
+
+	evs = toLoopEvents(core, "vibe", { tool_name: "file_system.read_file", tool_input: { path: "a" }, tool_status: "success" }, "/repo");
+	ok(evs.length === 0, "vibe read_file -> no loop event");
 
 	if (fails > 0) process.exit(1);
 }
