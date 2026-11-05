@@ -58,6 +58,7 @@ case "$BACKEND" in
   claude)          DF="Dockerfile.claude" ;;
   codex)           DF="Dockerfile.codex" ;;
   opencode)        DF="Dockerfile.opencode" ;;
+  vibe|mistral)    DF="Dockerfile.vibe" ;;
   *) echo "ensure-image: unknown backend '$BACKEND'" >&2; exit 1 ;;
 esac
 [ -f "$REPO/docker/$DF" ] || { echo "ensure-image: docker/$DF not found" >&2; exit 1; }
