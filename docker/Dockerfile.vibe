@@ -12,15 +12,15 @@
 # installer wraps, but explicit: uv provisions its own managed Python 3.12,
 # so we don't depend on whatever python3 the node base image ships (if any).
 #
-# GUARD WIRING: NOT done here. Vibe's hook/permission model has not been
-# checked yet - no vibe-guard-adapter exists, and launch-worker.sh does not
-# know this backend. Until that adapter exists, treat this image as
-# unguarded and do not route real worker changes to it.
+# GUARD WIRING: scripts/launch-worker.sh ... vibe generates hooks.toml in a
+# per-launch VIBE_HOME (under the session folder on the /repo mount, so no
+# bind mounts): vibe-guard-adapter.mjs (pre_tool, strict), loop-guard-hook.mjs
+# vibe (post_tool), vibe-completion-gate.mjs (post_agent). Those scripts use
+# node, which this image inherits from pi-contracts:latest.
 #
-# Auth: MISTRAL_API_KEY in the environment (takes precedence over
-# ~/.vibe/.env). Config lives in ~/.vibe/ (overridable via VIBE_HOME) -
-# pre-created below as the node user so an optional bind mount doesn't get
-# auto-created root-owned (same gotcha Dockerfile.agy/codex/opencode hit).
+# Auth: MISTRAL_API_KEY in the environment (launch-worker.sh passes it by
+# name from the Keychain, harness.mistral). ~/.vibe/ is still pre-created as
+# the node user for manual runs without VIBE_HOME.
 #
 #   docker build -f docker/Dockerfile.vibe -t harness-vibe:latest .   (context: the host project)
 FROM pi-contracts:latest

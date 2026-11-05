@@ -45,7 +45,7 @@ not what you'll see in your actual generated project.
      Keep it for reference, delete it once you've written your own contract.
 
 2. **`docker/`** — one Dockerfile per backend CLI (pi, claude, codex,
-   opencode, antigravity/agy). Each is `FROM pi-contracts:latest` except
+   opencode, vibe, antigravity/agy). Each is `FROM pi-contracts:latest` except
    `Dockerfile.pi` itself, which *is* what gets tagged `pi-contracts:latest`
    (`<slug>-pi-contracts:latest` after namespacing). Build these after step 1:
    ```
@@ -53,6 +53,7 @@ not what you'll see in your actual generated project.
    docker build -f docker/Dockerfile.claude   -t harness-claude:latest .
    docker build -f docker/Dockerfile.codex    -t harness-codex:latest .
    docker build -f docker/Dockerfile.opencode -t harness-opencode:latest .
+   docker build -f docker/Dockerfile.vibe     -t harness-vibe:latest .
    docker build -f docker/Dockerfile.agy      -t harness-agy:latest .
    ```
    `docker/fetch-models.sh` / `docker/models.Dockerfile` are optional —
@@ -75,7 +76,7 @@ not what you'll see in your actual generated project.
   authenticate once and never set an env var or re-login on later launches.
   See its own header comment for the full per-backend mechanism and the
   security tradeoff (live credentials persisted to a fixed host path).
-- `*-guard-adapter.mjs` (claude/codex/antigravity/opencode) — translate each
+- `*-guard-adapter.mjs` (claude/codex/antigravity/opencode/vibe) — translate each
   CLI's own hook protocol into calls against
   `/opt/contracts/extensions/checks.mjs` (baked into the image in step 1).
 - `*-completion-gate.mjs` + `completion-gate-core.mjs` — decide whether a
@@ -187,7 +188,9 @@ need to do.
    **shared across every bootstrapped project on that machine, on purpose**
    (log in once per backend per machine, not once per project). Antigravity
    is deliberately NOT covered by this (unverified credential path/possible
-   keyring dependency) — see `harness-config-lib.sh`'s header.
+   keyring dependency) — see `harness-config-lib.sh`'s header. The vibe
+   (Mistral Vibe) backend needs no login: it takes an API key from the
+   Keychain (`harness.mistral`, see `scripts/secrets.mjs`).
 4. **REPO root / worktrees.** All three launch scripts default
    `REPO=$(git rev-parse --show-toplevel)` and
    `WORKTREES_DIR=$REPO/.worktrees` — just run them from inside your new
@@ -215,7 +218,7 @@ need to do.
 
 ## Added 2026-10-21
 
-- **`scripts/secrets.mjs`** - API keys from the macOS Keychain (`harness.<name>`: openai, openai_metrics, aistudio, vertex, opencode, openrouter, jules); env vars and `~/.config/harness/secrets.env` as fallbacks. Keys never live in a repo.
+- **`scripts/secrets.mjs`** - API keys from the macOS Keychain (`harness.<name>`: openai, openai_metrics, aistudio, vertex, opencode, openrouter, jules, mistral); env vars and `~/.config/harness/secrets.env` as fallbacks. Keys never live in a repo.
 - **Native notifications with buttons** - `tools/harness-notify/build.sh` builds a small Swift app; `scripts/notify.mjs` turns watcher messages into notifications with Approve / Reply / Run / Open / Show in Finder / Dismiss. Buttons only run fixed commands written by the harness, never agent text.
 - **Jules worker** - `scripts/jules-worker.mjs` (+ `herdr-plugin/jules.json`): the router can hand a change to Google Jules; its pull request is fast-forwarded into the change branch and reported to the integrator like any worker. Needs a GitHub remote, the Jules GitHub app and a `source`.
 - **Usage**: OpenAI admin usage/costs (free data-sharing allowance + monthly spend), Antigravity per-model quotas and unknown buckets, stale readings marked; `openai-free/*` catalog models.
